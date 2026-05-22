@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    
+    <!-- Очереди: у root есть дочерняя очередь default -->
+    <property>
+        <name>yarn.scheduler.capacity.root.queues</name>
+        <value>default</value>
+    </property>
+    
+    <!-- default получает 100% ресурсов -->
+    <property>
+        <name>yarn.scheduler.capacity.root.default.capacity</name>
+        <value>100</value>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.default.maximum-capacity</name>
+        <value>100</value>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.default.state</name>
+        <value>RUNNING</value>
+    </property>
+    
+    <!-- ACL: кто может отправлять задачи -->
+    <property>
+        <name>yarn.scheduler.capacity.root.acl_submit_applications</name>
+        <value>root hadoop</value>
+    </property>
+    
+    <!-- ACL: кто может администрировать очереди (менять настройки на лету, убивать чужие задачи) -->
+    <property>
+        <name>yarn.scheduler.capacity.root.acl_administer_queue</name>
+        <value>root hadoop</value>
+    </property>
+    
+    <!-- ACL для дочерней очереди default (наследуется, но лучше указать явно) -->
+    <property>
+        <name>yarn.scheduler.capacity.root.default.acl_submit_applications</name>
+        <value>root hadoop</value>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.default.acl_administer_queue</name>
+        <value>root hadoop</value>
+    </property>
+
+</configuration>

@@ -1,4 +1,17 @@
 services:
+  namenode-format:
+    image: apache/hadoop:3.5.0
+    container_name: namenode-format
+    user: root
+    profiles:
+      - init
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["hdfs", "namenode", "-format"]
+    networks:
+      - hadoop
+
   namenode:
     image: apache/hadoop:3.5.0
     container_name: namenode
@@ -50,6 +63,28 @@ services:
     container_name: nodemanager
     ports:
       - "8042:8042"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["yarn", "nodemanager"]
+    depends_on:
+      - resourcemanager
+    networks:
+      - hadoop
+
+  nodemanager2:
+    image: apache/hadoop:3.5.0
+    container_name: nodemanager2
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["yarn", "nodemanager"]
+    depends_on:
+      - resourcemanager
+    networks:
+      - hadoop
+
+  nodemanager3:
+    image: apache/hadoop:3.5.0
+    container_name: nodemanager3
     volumes:
       - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
     command: ["yarn", "nodemanager"]

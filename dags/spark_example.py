@@ -2,6 +2,7 @@ from datetime import datetime
 
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.operators.bash import BashOperator
 
 with DAG(
     dag_id="spark_pi_example",
@@ -25,12 +26,18 @@ with DAG(
         verbose=True,
     )
 
+    create_file = BashOperator(
+        task_id="create_test_file",
+        bash_command="echo 'test data for spark' > /tmp/test.txt",
+        dag=dag,
+    )
+
     count_hdfs = SparkSubmitOperator(
         task_id="count_hdfs_files",
-        application="/opt/spark/examples/jars/spark-examples_2.12-3.0.0.jar",
-        java_class="org.apache.spark.examples.SparkDFSReadWriteTest",
+        application="/opt/spark/examples/jars/spark-examples_2.13-4.2.0-preview5.jar",
+        java_class="org.apache.spark.examples.DFSReadWriteTest",
         application_args=[
-            "hdfs://namenode:9000/",
+            "/tmp/test.txt",
             "hdfs://namenode:9000/output/"
         ],
         conf={
@@ -42,4 +49,4 @@ with DAG(
         name="airflow-hdfs-test",
     )
 
-    calculate_pi >> count_hdfs
+    calculate_pi >> create_file >> count_hdfs

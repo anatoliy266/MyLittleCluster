@@ -1,41 +1,10 @@
-<!-- <?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
-<configuration>
-    <property>
-        <name>mapreduce.framework.name</name>
-        <value>yarn</value>
-    </property>
-    <property>
-        <name>mapreduce.jobhistory.address</name>
-        <value>historyserver:10020</value>
-    </property>
-    <property>
-        <name>mapreduce.jobhistory.webapp.address</name>
-        <value>historyserver:19888</value>
-    </property>
-    <property>
-        <name>yarn.app.mapreduce.am.env</name>
-        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
-    </property>
-    <property>
-        <name>mapreduce.map.env</name>
-        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
-    </property>
-    <property>
-        <name>mapreduce.reduce.env</name>
-        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
-    </property>
-</configuration> -->
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
 <configuration>
-
     <property>
         <name>mapreduce.framework.name</name>
         <value>yarn</value>
     </property>
-
-    <!-- Вот они, те самые проблемные свойства. Передаем их через XML, а не через ENV -->
     <property>
         <name>yarn.app.mapreduce.am.env</name>
         <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
@@ -48,8 +17,6 @@
         <name>mapreduce.reduce.env</name>
         <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
     </property>
-
-    <!-- History Server -->
     <property>
         <name>mapreduce.jobhistory.address</name>
         <value>historyserver:10020</value>
@@ -58,8 +25,6 @@
         <name>mapreduce.jobhistory.webapp.address</name>
         <value>historyserver:19888</value>
     </property>
-    
-    <!-- Тюнинг памяти для Map и Reduce -->
     <property>
         <name>mapreduce.map.memory.mb</name>
         <value>2048</value>
@@ -68,7 +33,6 @@
         <name>mapreduce.reduce.memory.mb</name>
         <value>4096</value>
     </property>
-    
     <property>
         <name>mapreduce.map.cpu.vcores</name>
         <value>1</value>
@@ -77,7 +41,6 @@
         <name>mapreduce.reduce.cpu.vcores</name>
         <value>2</value>
     </property>
-
     <property>
         <name>mapreduce.map.java.opts</name>
         <value>-Xmx1638m</value>
@@ -86,8 +49,6 @@
         <name>mapreduce.reduce.java.opts</name>
         <value>-Xmx3276m</value>
     </property>
-
-    <!-- Сжатие промежуточных данных Snappy -->
     <property>
         <name>mapreduce.map.output.compress</name>
         <value>true</value>
@@ -96,5 +57,4 @@
         <name>mapreduce.map.output.compress.codec</name>
         <value>org.apache.hadoop.io.compress.SnappyCodec</value>
     </property>
-
 </configuration>
