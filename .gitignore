@@ -1,0 +1,16 @@
+# Секреты
+hadoop.env
+airflow/airflow.env
+
+# Бэкапы конфигов
+*.backup
+
+# Airflow
+logs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Docker
+volumes/
