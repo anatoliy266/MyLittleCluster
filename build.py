@@ -68,7 +68,7 @@ def start():
 def stop():
     """Полная остановка кластера без удаления данных в volumes"""
     print("\n🛑 Останавливаем контейнеры кластера...")
-    cmd = ["docker", "compose", "down"]
+    cmd = ["docker", "compose", "stop"]
     run_command(cmd)
     print("\n✅ Кластер успешно остановлен.")
 

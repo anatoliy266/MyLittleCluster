@@ -1,3 +1,5 @@
 apache-airflow-providers-apache-spark
 apache-airflow-providers-apache-hdfs
 apache-airflow-providers-fab
+kafka-python-ng==2.2.3
+requests==2.34.2

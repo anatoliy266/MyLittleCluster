@@ -70,6 +70,7 @@ services:
       - resourcemanager
     networks:
       - hadoop
+      - kafka_kafka-net
 
   nodemanager2:
     image: apache/hadoop:3.5.0
@@ -81,6 +82,7 @@ services:
       - resourcemanager
     networks:
       - hadoop
+      - kafka_kafka-net
 
   nodemanager3:
     image: apache/hadoop:3.5.0
@@ -92,6 +94,7 @@ services:
       - resourcemanager
     networks:
       - hadoop
+      - kafka_kafka-net
 
   historyserver:
     image: apache/hadoop:3.5.0
@@ -108,6 +111,7 @@ services:
       - datanode
     networks:
       - hadoop
+      - kafka_kafka-net
 
   spark:
     image: apache/spark:4.2.0-preview5-scala2.13-java17-python3-ubuntu
@@ -131,6 +135,7 @@ services:
       - resourcemanager
     networks:
       - hadoop
+      - kafka_kafka-net
 
   postgres:
     image: postgres:17
@@ -141,6 +146,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./.pgdata:/var/lib/postgresql/data 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
       interval: 10s
@@ -173,6 +179,7 @@ services:
       "
     networks:
       - hadoop
+      - kafka_kafka-net
 
   airflow-api-server:
     build:
@@ -205,6 +212,7 @@ services:
     command: airflow api-server --host 0.0.0.0
     networks:
       - hadoop
+      - kafka_kafka-net
 
   airflow-dag-processor:
     build:
@@ -234,6 +242,7 @@ services:
     command: airflow dag-processor
     networks:
       - hadoop
+      - kafka_kafka-net
 
   airflow-scheduler:
     build:
@@ -263,6 +272,7 @@ services:
     command: airflow scheduler
     networks:
       - hadoop
+      - kafka_kafka-net
 
 volumes:
   namenode_data:
@@ -276,3 +286,5 @@ networks:
   hadoop:
     name: hadoop-cluster
     driver: bridge
+  kafka_kafka-net:
+    external: true
