@@ -21,12 +21,12 @@ default_args = {
 }
 
 def run_init_kafka():
-    """Обертка для вызова инициализации Kafka."""
+    """проверка топика Kafka."""
     from FIRMS.kafka_utils import ensure_topic
     ensure_topic(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS, topic_name=KAFKA_TOPIC)
 
 def run_fetch_data(**context):
-    """Обертка для вызова сбора данных NASA."""
+    """вызов апи наса через модуль"""
     if not firms_key:
         raise AirflowFailException("Критическая ошибка: Переменная 'nasa_firms_token' не настроена в Airflow Variables!")
     from FIRMS.producer import fetch_and_push_data
@@ -46,7 +46,6 @@ with DAG(
     dag_id="nasa_wildfires_modular_v1",
     default_args=default_args,
     description="Пайплайн проверки топика и сбора данных NASA FIRMS на PythonOperator",
-    # ИСПРАВЛЕНО: вместо schedule_interval используем schedule
     schedule="@daily", 
     start_date=datetime(2026, 5, 28), 
     catchup=True, 

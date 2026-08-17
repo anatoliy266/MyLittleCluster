@@ -8,7 +8,7 @@ from kafka import KafkaProducer
 logger = logging.getLogger("airflow.task")
 
 def fetch_and_push_data(logical_date, firms_key: str, bootstrap_servers: list, topic_name: str):
-    """Скачивает термоточки из NASA FIRMS API и отправляет валидные батчи в Kafka. """
+    """Скачивает термоточки из NASA FIRMS API и отправляет в Kafka. """
     target_date = logical_date.strftime("%Y-%m-%d")
     current_hour = logical_date.hour
 
@@ -24,7 +24,6 @@ def fetch_and_push_data(logical_date, firms_key: str, bootstrap_servers: list, t
     )
 
     for sat in satellites:
-        # Чистый URL без лишних параметров запроса, вызывавших ошибку 400/404
         url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{firms_key}/{sat}/{region_bbox}/1/{target_date}"
         logger.info(f"Запрос данных для спутника {sat} за дату {target_date}")
         
