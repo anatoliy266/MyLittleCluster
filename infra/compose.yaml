@@ -1,0 +1,15 @@
+# Bootstrap-файл инфраструктуры.
+# Не содержит ни одного сервиса — только сети. Запускается один раз:
+#   docker compose -f infra/compose.yaml up -d
+# Все остальные стеки подключаются к этим сетям через external: true
+# и самостоятельно сети НЕ создают.
+
+name: infra
+
+networks:
+  cluster:
+    name: cluster
+    driver: bridge
+  kafka-net:
+    name: kafka-net
+    driver: bridge

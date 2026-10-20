@@ -56,6 +56,8 @@ def start():
         print(f"\n❌ Ошибка: Файл секретов не найден по пути {ENV_FILE_PATH}")
         print("Пожалуйста, создайте его перед запуском.")
         sys.exit(1)
+
+    subprocess.run(["docker", "compose", "down"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
     print("\n🚀 Запуск Big Data кластера (Hadoop + Spark + Airflow)...")
     cmd = ["docker", "compose", "up", "-d", "--build"]

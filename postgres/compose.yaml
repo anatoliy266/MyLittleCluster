@@ -1,0 +1,32 @@
+# Стек PostgreSQL (metadata-БД Airflow).
+# Требует предварительно созданной сети: docker compose -f infra/compose.yaml up -d
+# Запуск с ожиданием готовности (Airflow-стеку нужен именно здоровый postgres):
+#   docker compose -f postgres/compose.yaml up -d --wait
+
+name: postgres
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: postgres
+    env_file:
+      - ../airflow/airflow.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - cluster
+
+volumes:
+  postgres_data:
+
+networks:
+  cluster:
+    external: true

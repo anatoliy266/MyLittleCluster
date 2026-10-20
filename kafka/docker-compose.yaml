@@ -1,4 +1,4 @@
-version: '3.8'
+name: kafka
 
 services:
   controller-1:
@@ -81,6 +81,7 @@ services:
       - controller-3
     networks:
       - kafka-net
+      - cluster
 
 
   broker-2:
@@ -108,6 +109,7 @@ services:
       - controller-3
     networks:
       - kafka-net
+      - cluster
 
   broker-3:
     image: apache/kafka:4.3.0
@@ -134,6 +136,7 @@ services:
       - controller-3
     networks:
       - kafka-net
+      - cluster
 
 volumes:
   controller-1-data:
@@ -144,5 +147,8 @@ volumes:
   broker-3-data:
 
 networks:
+  # Обе сети создаются отдельным файлом infra/compose.yaml
   kafka-net:
-    driver: bridge
+    external: true
+  cluster:
+    external: true

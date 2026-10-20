@@ -1,0 +1,115 @@
+# Стек Airflow (api-server, dag-processor, scheduler + init).
+# Файл лежит внутри airflow/: dags, logs, apps, airflow.env, Dockerfile — рядом.
+# Требует предварительно созданной сети: docker compose -f infra/compose.yaml up -d
+# Порядок старта:
+#   1. docker compose -f postgres/compose.yaml up -d --wait   (postgres здоров)
+#   2. docker compose -f airflow/compose.yaml up -d --build   (airflow-init отработает первым)
+# Пересоздание только этого стека не затрагивает остальные:
+#   docker compose -f airflow/compose.yaml up -d --force-recreate
+
+name: airflow
+
+services:
+  # 1. Инициализация БД (Airflow 3.x) — одноразовый контейнер
+  airflow-init:
+    build:
+      context: .
+    container_name: airflow-init
+    env_file:
+      - ./airflow.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Включаем менеджер авторизации FAB для Airflow 3, чтобы команда создания пользователя работала
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    entrypoint: >
+      /bin/bash -c "
+      airflow db migrate &&
+      airflow users create --username \$${AIRFLOW_ADMIN_USER} --firstname Admin --lastname User --role Admin --email \$${AIRFLOW_ADMIN_EMAIL} --password \$${AIRFLOW_ADMIN_PASSWORD} &&
+      echo 'Airflow initialized with your custom FAB RBAC variables'
+      "
+    networks:
+      - cluster
+
+  airflow-api-server:
+    build:
+      context: .
+    container_name: airflow-api-server
+    env_file:
+      - ./airflow.env
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Обязательно дублируем менеджер авторизации здесь
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__API__BASE_URL: http://localhost:8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./apps:/apps
+      - ./logs:/opt/airflow/logs
+      - ../hadoop/hadoop_conf:/etc/hadoop:ro
+    command: airflow api-server --host 0.0.0.0
+    networks:
+      - cluster
+
+  airflow-dag-processor:
+    build:
+      context: .
+    container_name: airflow-dag-processor
+    env_file:
+      - ./airflow.env
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./apps:/apps
+      - ./logs:/opt/airflow/logs
+      - ../hadoop/hadoop_conf:/etc/hadoop:ro
+    command: airflow dag-processor
+    networks:
+      - cluster
+
+  airflow-scheduler:
+    build:
+      context: .
+    container_name: airflow-scheduler
+    env_file:
+      - ./airflow.env
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./apps:/apps
+      - ./logs:/opt/airflow/logs
+      - ../hadoop/hadoop_conf:/etc/hadoop:ro
+    command: airflow scheduler
+    networks:
+      - cluster
+
+networks:
+  cluster:
+    external: true
