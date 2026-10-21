@@ -14,7 +14,7 @@ logs/
 
 # Python
 __pycache__/
-*.py
+*.pyc
 
 # Docker
 volumes/
