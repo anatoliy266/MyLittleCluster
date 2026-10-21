@@ -1,80 +1,42 @@
 name: kafka
 
+x-configs: &kafka-base
+  image: apache/kafka:4.3.0
+  env_file:
+    - ./kafka.env
+  networks:
+    - kafka-net
+
 services:
   controller-1:
-    image: apache/kafka:4.3.0
     container_name: controller-1
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: controller
-      KAFKA_LISTENERS: CONTROLLER://:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@controller-1:9093,2@controller-2:9093,3@controller-3:9093
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: '4L62CpxgTDu_v9cIC7eE9A'
+    <<: *kafka-base
     volumes:
-      - controller-1-data:/var/lib/kafka/data
-    networks:
-      - kafka-net
+      - ./kafka_conf/c1:/mnt/shared/config
+      - c1-data:/var/lib/kafka/data
 
   controller-2:
-    image: apache/kafka:4.3.0
     container_name: controller-2
-    environment:
-      KAFKA_NODE_ID: 2
-      KAFKA_PROCESS_ROLES: controller
-      KAFKA_LISTENERS: CONTROLLER://:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@controller-1:9093,2@controller-2:9093,3@controller-3:9093
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: '4L62CpxgTDu_v9cIC7eE9A'
+    <<: *kafka-base
     volumes:
-      - controller-2-data:/var/lib/kafka/data
-    networks:
-      - kafka-net
+      - ./kafka_conf/c2:/mnt/shared/config
+      - c2-data:/var/lib/kafka/data
 
   controller-3:
-    image: apache/kafka:4.3.0
     container_name: controller-3
-    environment:
-      KAFKA_NODE_ID: 3
-      KAFKA_PROCESS_ROLES: controller
-      KAFKA_LISTENERS: CONTROLLER://:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@controller-1:9093,2@controller-2:9093,3@controller-3:9093
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: '4L62CpxgTDu_v9cIC7eE9A'
+    <<: *kafka-base
     volumes:
-      - controller-3-data:/var/lib/kafka/data
-    networks:
-      - kafka-net
-
+      - ./kafka_conf/c3:/mnt/shared/config
+      - c3-data:/var/lib/kafka/data
 
   broker-1:
-    image: apache/kafka:4.3.0
     container_name: broker-1
+    <<: *kafka-base
     ports:
       - 29092:29092
-    environment:
-      KAFKA_NODE_ID: 4
-      KAFKA_PROCESS_ROLES: broker
-      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker-1:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@controller-1:9093,2@controller-2:9093,3@controller-3:9093
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: '4L62CpxgTDu_v9cIC7eE9A'
     volumes:
-      - broker-1-data:/var/lib/kafka/data
+      - ./kafka_conf/b1:/mnt/shared/config
+      - b1-data:/var/lib/kafka/data
     depends_on:
       - controller-1
       - controller-2
@@ -85,24 +47,13 @@ services:
 
 
   broker-2:
-    image: apache/kafka:4.3.0
     container_name: broker-2
+    <<: *kafka-base
     ports:
       - 39092:39092
-    environment:
-      KAFKA_NODE_ID: 5
-      KAFKA_PROCESS_ROLES: broker
-      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:39092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker-2:9092,PLAINTEXT_HOST://localhost:39092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@controller-1:9093,2@controller-2:9093,3@controller-3:9093
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: '4L62CpxgTDu_v9cIC7eE9A'
     volumes:
-      - broker-2-data:/var/lib/kafka/data
+      - ./kafka_conf/b2:/mnt/shared/config
+      - b2-data:/var/lib/kafka/data
     depends_on:
       - controller-1
       - controller-2
@@ -112,24 +63,13 @@ services:
       - cluster
 
   broker-3:
-    image: apache/kafka:4.3.0
     container_name: broker-3
+    <<: *kafka-base
     ports:
       - 49092:49092
-    environment:
-      KAFKA_NODE_ID: 6
-      KAFKA_PROCESS_ROLES: broker
-      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:49092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker-3:9092,PLAINTEXT_HOST://localhost:49092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@controller-1:9093,2@controller-2:9093,3@controller-3:9093
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: '4L62CpxgTDu_v9cIC7eE9A'
     volumes:
-      - broker-3-data:/var/lib/kafka/data
+      - ./kafka_conf/b3:/mnt/shared/config
+      - b3-data:/var/lib/kafka/data
     depends_on:
       - controller-1
       - controller-2
@@ -139,12 +79,12 @@ services:
       - cluster
 
 volumes:
-  controller-1-data:
-  controller-2-data:
-  controller-3-data:
-  broker-1-data:
-  broker-2-data:
-  broker-3-data:
+  c1-data:
+  c2-data:
+  c3-data:
+  b1-data:
+  b2-data:
+  b3-data:
 
 networks:
   # Обе сети создаются отдельным файлом infra/compose.yaml

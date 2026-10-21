@@ -1,31 +1,84 @@
+# Стек ClickHouse.
+# Требует предварительно созданной сети: docker compose -f infra/compose.yaml up -d
+# host-порт 9000 (native) сдвинут на 19000, чтобы не конфликтовать
+# с HDFS RPC namenode (localhost:9000).
+
+name: clickhouse
+
+x-configs: &ch-default-configs
+  image: clickhouse/clickhouse-server:26.7.3.19
+  env_file:
+      - ./clickhouse.env
+  healthcheck:
+    test: ["CMD", "clickhouse-client", "-q", "SELECT 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 10s
+  ulimits:
+    nproc: 65535
+    nofile:
+      soft: 262144
+      hard: 262144
+  networks:
+    - cluster
+  depends_on:
+      clickhouse-keeper:
+        condition: service_healthy
+
 services:
-  namenode-format:
-    image: clickhouse:26.7.3.19
-    container_name: clickhouse-server
-    user: root
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
+  clickhouse-node01:
+    container_name: clickhouse-node01
+    hostname: clickhouse-node01
+    <<: *ch-default-configs
+    volumes:
+      - ./clickhouse_conf/n1/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./clickhouse_conf/n1/users.xml:/etc/clickhouse-server/users.d/users.xml
     ports:
       - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
-      - spark_bin:/opt/spark:ro
-      - java_bin:/opt/java/openjdk:ro
-    command: []
+      - "19003:9000"
     networks:
-      - hadoop
-      - kafka_kafka-net
-
-volumes:
-  spark_bin:
-  java_bin:
-
+      - cluster
+  clickhouse-node02:
+    container_name: clickhouse-node02
+    hostname: clickhouse-node02
+    <<: *ch-default-configs
+    volumes:
+      - ./clickhouse_conf/n2/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./clickhouse_conf/n2/users.xml:/etc/clickhouse-server/users.d/users.xml
+    ports:
+      - "8124:8123"
+      - "19004:9000"
+    networks:
+      - cluster
+  clickhouse-node03:
+    container_name: clickhouse-node03
+    hostname: clickhouse-node03
+    <<: *ch-default-configs
+    volumes:
+      - ./clickhouse_conf/n3/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./clickhouse_conf/n3/users.xml:/etc/clickhouse-server/users.d/users.xml
+    ports:
+      - "8125:8123"
+      - "19005:9000"
+    networks:
+      - cluster
+  clickhouse-keeper:
+    image: clickhouse/clickhouse-keeper:26.9.22.3
+    container_name: clickhouse-keeper
+    hostname: clickhouse-keeper
+    volumes:
+      - ./clickhouse_conf/keeper/keeper_config.xml:/etc/clickhouse-keeper/keeper_config.xml
+    ports:
+      - "9181:9181"
+    healthcheck:
+      test: ["CMD", "clickhouse-keeper-client", "-q", "ruok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cluster
+  
 networks:
-  hadoop:
-    name: hadoop-cluster
-    driver: bridge
-  kafka_kafka-net:
+  cluster:
     external: true
