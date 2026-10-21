@@ -36,7 +36,7 @@ RUN apt-get update --allow-releaseinfo-change || true && \
     rm -rf /var/lib/apt/lists/*
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-ENV SPARK_VERSION=4.2.0-preview5
+ENV SPARK_VERSION=4.2.0
 ENV SPARK_HADOOP_VERSION=3
 ENV SPARK_HOME=/opt/spark
 # https://downloads.apache.org/spark/spark-4.2.0-preview5/spark-4.2.0-preview5-bin-hadoop3.tgz      

@@ -7,7 +7,7 @@ name: spark
 
 services:
   spark:
-    image: apache/spark:4.2.0-preview5-scala2.13-java17-python3-ubuntu
+    image: apache/spark:4.2.0-scala2.13-java17-python3-ubuntu
     container_name: spark
     stdin_open: true
     tty: true
