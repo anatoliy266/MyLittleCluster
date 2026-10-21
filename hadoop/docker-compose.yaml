@@ -1,0 +1,122 @@
+# Стек HDFS + YARN.
+# Требует предварительно созданной сети: docker compose -f infra/compose.yaml up -d
+# Первая инициализация: docker compose -f hadoop/compose.yaml --profile init up -d
+
+name: hadoop
+
+services:
+  namenode:
+    image: apache/hadoop:3.5.0
+    container_name: namenode
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["/bin/bash", "-c", "hdfs namenode -format -nonInteractive || true; hdfs namenode"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    networks:
+      - cluster
+
+  datanode:
+    image: apache/hadoop:3.5.0
+    container_name: datanode
+    ports:
+      - "9864:9864"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["hdfs", "datanode"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9864"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      namenode:
+        condition: service_healthy
+    networks:
+      - cluster
+
+  resourcemanager:
+    image: apache/hadoop:3.5.0
+    container_name: resourcemanager
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["yarn", "resourcemanager"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_started
+    networks:
+      - cluster
+
+  nodemanager:
+    image: apache/hadoop:3.5.0
+    container_name: nodemanager
+    ports:
+      - "8042:8042"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["yarn", "nodemanager"]
+    depends_on:
+      resourcemanager:
+        condition: service_healthy
+    networks:
+      - cluster
+
+  nodemanager2:
+    image: apache/hadoop:3.5.0
+    container_name: nodemanager2
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["yarn", "nodemanager"]
+    depends_on:
+      resourcemanager:
+        condition: service_healthy
+    networks:
+      - cluster
+
+  nodemanager3:
+    image: apache/hadoop:3.5.0
+    container_name: nodemanager3
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["yarn", "nodemanager"]
+    depends_on:
+      resourcemanager:
+        condition: service_healthy
+    networks:
+      - cluster
+
+  historyserver:
+    image: apache/hadoop:3.5.0
+    container_name: historyserver
+    ports:
+      - "19888:19888"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+    command: ["mapred", "historyserver"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    networks:
+      - cluster
+
+networks:
+  cluster:
+    external: true

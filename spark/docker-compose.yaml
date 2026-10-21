@@ -1,0 +1,29 @@
+# Стек Spark.
+# Требует предварительно созданной сети: docker compose -f infra/compose.yaml up -d
+# Пересоздание только этого стека:
+#   docker compose -f spark/compose.yaml up -d --force-recreate
+
+name: spark
+
+services:
+  spark:
+    image: apache/spark:4.2.0-scala2.13-java17-python3-ubuntu
+    container_name: spark
+    stdin_open: true
+    tty: true
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+      - ./spark_conf:/spark/conf:ro
+      - ../airflow/apps:/apps
+    command: ["tail", "-f", "/dev/null"]
+    restart: unless-stopped
+    networks:
+      - cluster
+
+networks:
+  cluster:
+    external: true
