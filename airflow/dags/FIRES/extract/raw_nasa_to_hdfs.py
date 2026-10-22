@@ -12,6 +12,8 @@ from typing import List, Dict, Any
 import requests
 from hdfs import InsecureClient
 
+from default_args import default_args
+
 from airflow.sdk import DAG, DeadlineAlert, DeadlineReference, Variable, AsyncCallback
 from airflow.sdk.exceptions import AirflowFailException
 from airflow.providers.standard.operators.python import PythonOperator
@@ -121,16 +123,6 @@ def task_failure_alert(context):
     logger.critical(f"Task {context.get('task_instance').task_id} failed! {context.get('exception')}")
             
 
-default_args = {
-    "owner": "4nt0xff",
-    "depends_on_past": False,
-    "email_on_failure": False,
-    "retries": 3,
-    "retry_delay": timedelta(minutes=5),
-    "retry_exponential_backoff": True,
-    "max_retry_delay": timedelta(minutes=30),
-}
-
 with DAG(
     dag_id="nasa_firms_extract",
     default_args=default_args,
@@ -159,6 +151,9 @@ with DAG(
         python_callable=extract_firms_data,
     )
 
-    end = EmptyOperator(task_id="start")
+    end = EmptyOperator(task_id="end_pipeline")
 
     start >> extract_task >> end
+
+
+    
