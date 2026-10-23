@@ -16,9 +16,11 @@ x-configs: &airflow-base
       - ./airflow.env
   volumes:
     - ./airflow_conf/airflow.cfg:/opt/airflow/airflow.cfg:ro
+    - ./hadoop_conf:/etc/hadoop:ro
     - ./dags:/opt/airflow/dags
     - ./apps:/apps
     - ./logs:/opt/airflow/logs
+    
   networks:
     - cluster
 

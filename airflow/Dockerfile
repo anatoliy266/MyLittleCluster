@@ -25,17 +25,17 @@
 # COPY requirements.txt /requirements.txt
 
 # RUN pip install --no-cache-dir -r /requirements.txt
-FROM apache/airflow:3.2.1-python3.14
+FROM apache/airflow:3.4.0b2-python3.14
 
 USER root
 
 # Добавляем флаги, чтобы apt-get не падал, если какие-то старые сервера Debian недоступны
 RUN apt-get update --allow-releaseinfo-change || true && \
-    apt-get install -y --no-install-recommends openjdk-17-jdk curl build-essential libkrb5-dev && \
+    apt-get install -y --no-install-recommends openjdk-21-jdk gzip tar curl build-essential libkrb5-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV SPARK_VERSION=4.2.0
 ENV SPARK_HADOOP_VERSION=3
 ENV SPARK_HOME=/opt/spark

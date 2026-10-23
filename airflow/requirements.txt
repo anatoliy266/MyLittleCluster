@@ -3,3 +3,4 @@ apache-airflow-providers-apache-hdfs
 apache-airflow-providers-fab
 kafka-python-ng==2.2.3
 requests==2.34.2
+numpy==2.5.4
