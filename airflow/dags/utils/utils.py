@@ -1,7 +1,5 @@
 import logging
 
-from dags.utils.default_args import default_args
-
 from hdfs import InsecureClient
 from airflow.sdk.exceptions import AirflowFailException
 from airflow.providers.apache.hdfs.hooks.webhdfs import WebHDFSHook

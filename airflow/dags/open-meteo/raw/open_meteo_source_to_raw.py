@@ -5,8 +5,8 @@ import time
 from datetime import datetime, timedelta
 from typing import List
 
-from dags.utils.default_args import default_args
-from dags.utils import utils
+from utils.default_args import default_args
+from utils import utils
 
 import requests
 
@@ -93,6 +93,8 @@ def split_bbox(bbox, step, max_points) -> List:
     n_rows, n_cols = lon_grid.shape
 
     limit = max_points - 1
+
+    rows = min(n_rows, int(np.sqrt(limit)))
     cols = min(n_cols, limit // rows)
     rows = min(n_rows, limit // cols)
 
@@ -149,7 +151,7 @@ def extract_openmeteo_data(**context):
     date_from = (execution_date - timedelta(days=1)).strftime("%Y-%0m-%0d")
     date_to = execution_date.strftime("%Y-%0m-%0d")
 
-    hdfs_client = utils.get_hdfs_client()
+    hdfs_client = utils.get_hdfs_client("hdfs_conn")
 
     for area in bbox_list:
         stagging_hdfs_path = f"{stagging_path}/year={year}/month={month}/day={day}/open_meteo_{','.join(map(str, [area['min_latitude'], area['min_longitude'], area['max_latitude'], area['max_longitude']]))}_{','.join(map(str, models))}_{execution_date.strftime('%Y%m%d')}.json"
@@ -224,7 +226,7 @@ def publish_openmeteo_data(**context):
     staging_path = context["params"]["staging_path"]
     raw_path = context["params"]["path"]
 
-    hdfs_client = utils.get_hdfs_client()
+    hdfs_client = utils.get_hdfs_client("hdfs_conn")
 
     files_to_publish = []
 
