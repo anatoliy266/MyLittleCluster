@@ -6,14 +6,16 @@ name: hadoop
 
 services:
   namenode:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: namenode
     ports:
       - "9870:9870"
       - "9000:9000"
     volumes:
       - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
-    command: ["/bin/bash", "-c", "hdfs namenode -format -nonInteractive || true; hdfs namenode"]
+      - hadoop_namenode_data:/opt/hadoop/dfs/name
+    command: ["hdfs","namenode"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9870"]
       interval: 30s
@@ -24,12 +26,14 @@ services:
       - cluster
 
   datanode:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: datanode
     ports:
       - "9864:9864"
     volumes:
       - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
+      - hadoop_datanode_data:/opt/hadoop/dfs/data
     command: ["hdfs", "datanode"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9864"]
@@ -44,7 +48,8 @@ services:
       - cluster
 
   resourcemanager:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: resourcemanager
     ports:
       - "8088:8088"
@@ -66,7 +71,8 @@ services:
       - cluster
 
   nodemanager:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: nodemanager
     ports:
       - "8042:8042"
@@ -80,7 +86,8 @@ services:
       - cluster
 
   nodemanager2:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: nodemanager2
     volumes:
       - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
@@ -92,7 +99,8 @@ services:
       - cluster
 
   nodemanager3:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: nodemanager3
     volumes:
       - ./hadoop_conf:/opt/hadoop/etc/hadoop:ro
@@ -104,7 +112,8 @@ services:
       - cluster
 
   historyserver:
-    image: apache/hadoop:3.5.0
+    build:
+      context: .
     container_name: historyserver
     ports:
       - "19888:19888"
@@ -116,6 +125,15 @@ services:
         condition: service_healthy
     networks:
       - cluster
+
+volumes:
+  hadoop_namenode_data:
+    external: true
+    name: hadoop_namenode_data
+
+  hadoop_datanode_data:
+    external: true
+    name: hadoop_datanode_data
 
 networks:
   cluster:

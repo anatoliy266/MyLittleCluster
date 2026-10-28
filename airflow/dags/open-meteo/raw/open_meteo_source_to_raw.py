@@ -16,6 +16,7 @@ from airflow.sdk import (
     DeadlineReference,
     AsyncCallback,
     TriggerRule,
+    Param,
 )
 from airflow.sdk.exceptions import AirflowFailException
 from airflow.providers.standard.operators.python import PythonOperator
@@ -131,16 +132,13 @@ def wait_for_rate_limit(response_time: float, waiting_seconds: int):
 
 def extract_openmeteo_data(**context):
     bbox: List[float] = context["params"]["bbox_list"]
-    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-        logger.error(
-            f"BBox должен быть списком или кортежем из 4 элементов: [min_lon, min_lat, max_lon, max_lat]: {bbox}"
-        )
-        raise AirflowFailException(f"неверный параметр: bbox_list: {bbox}")
-
-    # ecmwf_ifs
     models: List[str] = context["params"]["models"]
-    stagging_path = context["params"]["staging_path"]
-    raw_path = context["params"]["path"]
+    staging_base_path = context["params"]["staging_path"]
+    raw_base_path = context["params"]["path"]
+    force_reload = context["params"]["force_reload"]
+
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        raise AirflowFailException(f"Некорректный параметр bbox_list: {bbox}")
 
     bbox_list = split_bbox(bbox, 0.1, 1000)
 
@@ -148,109 +146,244 @@ def extract_openmeteo_data(**context):
     year = execution_date.strftime("%Y")
     month = execution_date.strftime("%m")
     day = execution_date.strftime("%d")
-    date_from = (execution_date - timedelta(days=1)).strftime("%Y-%0m-%0d")
-    date_to = execution_date.strftime("%Y-%0m-%0d")
+    target_date = execution_date.strftime("%Y%m%d")
+
+    date_from = (execution_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    date_to = execution_date.strftime("%Y-%m-%d")
+
+    staging_date_path = posixpath.join(
+        staging_base_path,
+        f"year={year}",
+        f"month={month}",
+        f"day={day}",
+    )
+    raw_date_path = posixpath.join(
+        raw_base_path,
+        f"year={year}",
+        f"month={month}",
+        f"day={day}",
+    )
 
     hdfs_client = utils.get_hdfs_client("hdfs_conn")
+
+    # При force_reload очищаем только STAGING текущей даты.
+    # RAW остаётся нетронутым до публикации.
+    if force_reload:
+        if hdfs_client.status(staging_date_path, strict=False) is not None:
+            hdfs_client.delete(staging_date_path, recursive=True)
+            logger.info(
+                f"STAGING очищен перед принудительной загрузкой: "
+                f"{staging_date_path}"
+            )
+
+    hdfs_client.makedirs(staging_date_path)
 
     for area in bbox_list:
-        stagging_hdfs_path = f"{stagging_path}/year={year}/month={month}/day={day}/open_meteo_{','.join(map(str, [area['min_latitude'], area['min_longitude'], area['max_latitude'], area['max_longitude']]))}_{','.join(map(str, models))}_{execution_date.strftime('%Y%m%d')}.json"
+        coordinates = [
+            area["min_latitude"],
+            area["min_longitude"],
+            area["max_latitude"],
+            area["max_longitude"],
+        ]
+        area_str = ",".join(map(str, coordinates))
+        models_str = ",".join(models)
 
-        raw_hdfs_path = f"{raw_path}/year={year}/month={month}/day={day}/open_meteo_{",".join(map(str, [area['min_latitude'], area['min_longitude'], area['max_latitude'], area['max_longitude']]))}_{",".join(map(str, models))}_{execution_date.strftime("%Y%m%d")}.json"
+        filename = f"open_meteo_{area_str}_{models_str}_{target_date}.json"
 
-        if hdfs_client.status(raw_hdfs_path, strict=False) is not None:
-            logger.info(
-                f"Целевой файл уже существует: {raw_hdfs_path}, загрузка пропущена"
-            )
-            continue
+        staging_file = posixpath.join(staging_date_path, filename)
+        raw_file = posixpath.join(raw_date_path, filename)
 
-        if hdfs_client.status(stagging_hdfs_path, strict=False) is not None:
-            logger.info(
-                f"Целевой файл уже существует: {stagging_hdfs_path}, загрузка пропущена"
-            )
-            continue
+        # Обычный запуск: существующие данные повторно не загружаем.
+        if not force_reload:
+            if hdfs_client.status(raw_file, strict=False) is not None:
+                # Если остался файл от незавершённого прошлого запуска,
+                # не даём ему случайно попасть в повторную публикацию.
+                if hdfs_client.status(staging_file, strict=False) is not None:
+                    hdfs_client.delete(staging_file)
+                    logger.info(
+                        f"Удалён устаревший STAGING-файл, "
+                        f"поскольку данные уже опубликованы: {staging_file}"
+                    )
 
-        logger.info(f"Загрузка данных для [{",".join(map(str, area))}]")
-        openmeteo_url = f'https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&hourly={",".join(requested_params)}&models={",".join(map(str, models))}&wind_speed_unit=ms&bounding_box={",".join(map(str, [area['min_latitude'], area['min_longitude'], area['max_latitude'], area['max_longitude']]))}&start_date={date_from}&end_date={date_to}'
-        try:
-            bridge_url = "http://host.docker.internal:8765/v1/forecast"
-            api_params = openmeteo_url.split("?", 1)[1]
-
-            response = requests.get(
-                f"{bridge_url}?{api_params}",
-                timeout=90,
-                stream=False,
-            )
-            response.raise_for_status()
-
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "json" not in content_type:
-                logger.error(f"Ожидался JSON, получен Content-Type: {content_type}")
-                raise AirflowFailException(
-                    f"Запрос для {','.join(map(str, area))} "
-                    f"не вернул валидный JSON: Content-Type={content_type}"
+                logger.info(
+                    f"Файл уже существует в RAW, загрузка пропущена: " f"{raw_file}"
                 )
+                continue
 
-            response_time = time.monotonic()
+            if hdfs_client.status(staging_file, strict=False) is not None:
+                logger.info(
+                    f"Файл уже существует в STAGING, загрузка пропущена: "
+                    f"{staging_file}"
+                )
+                continue
 
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP ошибка: {http_err}. Ответ: {response.text[:200]}")
-            raise AirflowFailException(
-                "HTTP ошибка при запросе к посреднику Open-Meteo"
-            ) from http_err
+        logger.info(f"Загрузка данных для области [{area_str}]")
 
-        except requests.exceptions.RequestException as req_err:
-            logger.error(f"Сетевая ошибка посредника: {req_err}")
-            raise
+        api_params = {
+            "latitude": 52.52,
+            "longitude": 13.41,
+            "hourly": ",".join(requested_params),
+            "models": models_str,
+            "wind_speed_unit": "ms",
+            "bounding_box": area_str,
+            "start_date": date_from,
+            "end_date": date_to,
+        }
 
-        logger.info(f"Сохранение ответа в datalake")
+        bridge_url = "http://host.docker.internal:8765/v1/forecast"
 
         try:
-            with hdfs_client.write(stagging_hdfs_path, overwrite=True) as writer:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        writer.write(chunk)
-        except Exception as e:
-            logger.error(f"Ошибка при записи в HDFS или Kafka: {e}")
+            with requests.get(
+                bridge_url,
+                params=api_params,
+                timeout=90,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+
+                content_type = response.headers.get("Content-Type", "").lower()
+
+                if "json" not in content_type:
+                    raise AirflowFailException(
+                        f"Ожидался JSON для области {area_str}, "
+                        f"получен Content-Type={content_type}"
+                    )
+
+                response_time = time.monotonic()
+
+                logger.info(f"Сохранение ответа в HDFS: {staging_file}")
+
+                try:
+                    with hdfs_client.write(
+                        staging_file,
+                        overwrite=True,
+                    ) as writer:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                writer.write(chunk)
+
+                except Exception as e:
+                    logger.error(f"Ошибка записи в HDFS: {staging_file}: {e}")
+
+                    # Не оставляем частично записанный файл,
+                    # который следующий запуск мог бы принять за готовый.
+                    if hdfs_client.status(staging_file, strict=False) is not None:
+                        hdfs_client.delete(staging_file)
+
+                    raise AirflowFailException(f"Ошибка загрузки в STAGING: {e}") from e
+
+        except requests.exceptions.HTTPError as e:
+            logger.error(
+                f"HTTP-ошибка Open-Meteo: {e}. " f"Ответ: {response.text[:200]}"
+            )
             raise AirflowFailException(
-                f"Сбой на этапе загрузки в хранилище: {e}"
+                f"HTTP-ошибка при запросе области {area_str}"
             ) from e
 
-        wait_for_rate_limit(response_time, 60)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Сетевая ошибка Open-Meteo: {e}")
+            raise
 
+        wait_for_rate_limit(response_time, 120)
+
+    logger.info(f"Извлечение завершено. STAGING: {staging_date_path}")
 
 def publish_openmeteo_data(**context):
-    logger.info(
-        f"Публикация данных {",".join(map(str, context['params']['bbox_list']))} за {context['logical_date']} в raw слой"
+    execution_date = context["logical_date"]
+    year = execution_date.strftime("%Y")
+    month = execution_date.strftime("%m")
+    day = execution_date.strftime("%d")
+
+    staging_base_path = context["params"]["staging_path"]
+    raw_base_path = context["params"]["path"]
+
+    staging_date_path = posixpath.join(
+        staging_base_path,
+        f"year={year}",
+        f"month={month}",
+        f"day={day}",
     )
-    staging_path = context["params"]["staging_path"]
-    raw_path = context["params"]["path"]
+    raw_date_path = posixpath.join(
+        raw_base_path,
+        f"year={year}",
+        f"month={month}",
+        f"day={day}",
+    )
 
     hdfs_client = utils.get_hdfs_client("hdfs_conn")
+
+    if hdfs_client.status(staging_date_path, strict=False) is None:
+        logger.info(
+            f"STAGING-каталог отсутствует, публикация пропущена: "
+            f"{staging_date_path}"
+        )
+        return
 
     files_to_publish = []
 
-    for root, dirs, files in hdfs_client.walk(staging_path):
-        for file in files:
-            staging_file_path = posixpath.join(root, file)
-            relative_path = posixpath.relpath(staging_file_path, staging_path)
-            raw_file_path = posixpath.join(raw_path, relative_path)
+    for root, dirs, files in hdfs_client.walk(staging_date_path):
+        for filename in files:
+            staging_file = posixpath.join(root, filename)
+            relative_path = posixpath.relpath(staging_file, staging_date_path)
+            raw_file = posixpath.join(raw_date_path, relative_path)
 
-            files_to_publish.append((staging_file_path, raw_file_path))
+            files_to_publish.append((staging_file, raw_file))
 
     if not files_to_publish:
-        raise AirflowFailException(f"В staging-каталоге нет файлов: {staging_path}")
+        logger.info(f"В STAGING нет файлов для публикации: {staging_date_path}")
+        return
 
-    for staging_file_path, raw_file_path in files_to_publish:
-        logger.info(f"Перенос файла: {staging_file_path} -> {raw_file_path}")
+    for staging_file, raw_file in files_to_publish:
+        logger.info(f"Публикация: {staging_file} -> {raw_file}")
 
-        parent_dir = posixpath.dirname(raw_file_path)
-        hdfs_client.makedirs(parent_dir)
+        hdfs_client.makedirs(posixpath.dirname(raw_file))
 
-        if hdfs_client.status(raw_file_path, strict=False) is not None:
-            raise AirflowFailException(f"Целевой файл уже существует: {raw_file_path}")
+        backup_file = f"{raw_file}.backup"
 
-        hdfs_client.rename(staging_file_path, raw_file_path)
+        if hdfs_client.status(backup_file, strict=False) is not None:
+            raise AirflowFailException(
+                f"Найден backup предыдущей публикации: {backup_file}. "
+                "Требуется проверить состояние HDFS перед повторным запуском."
+            )
+
+        raw_exists = hdfs_client.status(raw_file, strict=False) is not None
+
+        if raw_exists:
+            if not hdfs_client.rename(raw_file, backup_file):
+                raise AirflowFailException(
+                    f"Не удалось сохранить предыдущий RAW-файл: {raw_file}"
+                )
+
+        try:
+            if not hdfs_client.rename(staging_file, raw_file):
+                raise AirflowFailException(
+                    f"Не удалось опубликовать файл: {staging_file}"
+                )
+
+        except Exception:
+            backup_exists = hdfs_client.status(backup_file, strict=False) is not None
+            raw_now_exists = hdfs_client.status(raw_file, strict=False) is not None
+
+            if backup_exists and not raw_now_exists:
+                if not hdfs_client.rename(backup_file, raw_file):
+                    logger.error(
+                        f"Не удалось восстановить предыдущий RAW-файл: "
+                        f"{backup_file}"
+                    )
+
+            raise
+
+        if raw_exists:
+            if hdfs_client.status(backup_file, strict=False) is not None:
+                try:
+                    hdfs_client.delete(backup_file)
+                except Exception as e:
+                    logger.warning(
+                        f"Новый файл опубликован, но backup не удалён: "
+                        f"{backup_file}: {e}"
+                    )
+
+    logger.info(f"Публикация завершена: {raw_date_path}")
 
 
 with DAG(
@@ -273,6 +406,14 @@ with DAG(
         "models": ["ecmwf_ifs"],
         "path": "/raw/open_meteo/",
         "staging_path": "/stagging/open_meteo/",
+        "force_reload": Param(
+            False,
+            type="boolean",
+            description=(
+                "Принудительно очистить STAGING за дату запуска "
+                "и повторно загрузить все области Open-Meteo"
+            ),
+        ),
     },
 ) as dag:
     start = EmptyOperator(task_id="start_pipeline")

@@ -22,8 +22,6 @@ from pyspark.sql.types import (
     DateType,
 )
 
-
-
 # ВХОДНАЯ СХЕМА — ТОЧНЫЙ ОЖИДАЕМЫЙ ЗАГОЛОВОК CSV, 14 ПОЛЕЙ
 # latitude, longitude, bright_ti4, scan, track, acq_date, acq_time,
 # satellite, instrument, confidence, version, bright_ti5, frp, daynight
@@ -104,7 +102,7 @@ def create_spark_session(args):
 
 #
 # 3. resolve_run_paths
-def resolve_run_paths(args, session, logger):
+def resolve_run_paths(session, args, logger):
     try:
         execution_date = date.fromisoformat(args.execution_date)
     except ValueError as exc:
@@ -124,9 +122,7 @@ def resolve_run_paths(args, session, logger):
     fs = raw.getFileSystem(session._jsc.hadoopConfiguration())
 
     if not fs.exists(raw):
-        raise FileNotFoundError(
-            f"RAW-каталог не существует: {raw_path}"
-        )
+        raise FileNotFoundError(f"RAW-каталог не существует: {raw_path}")
 
     hdfs_run_id = args.run_id.replace(":", "-")
 
@@ -134,36 +130,38 @@ def resolve_run_paths(args, session, logger):
     publication_root = args.stg_path
 
     # Изолированная рабочая область этого запуска.
-    staging_run_path = posixpath.join(
-        publication_root, "staging", hdfs_run_id
-    )
+    staging_run_path = posixpath.join(publication_root, "staging", hdfs_run_id)
 
     # - Определить изолированные пути рабочего каталога для STG, карантина, метрик и манифеста.
     stg_path = posixpath.join(staging_run_path, "stg")
     quarantine_path = posixpath.join(staging_run_path, "quarantine")
-    metrics_path = posixpath.join(staging_run_path, "metrics.json")
-    manifest_path = posixpath.join(staging_run_path, "manifest.json")
+    metadata_path = posixpath.join(staging_run_path, "metadata")
 
     # - Определить неизменяемый путь опубликованного набора и указатель CURRENT для даты.
-    published_run_path = posixpath.join(
-        publication_root, "runs", hdfs_run_id
+    published_run_path = posixpath.join(publication_root, "runs", hdfs_run_id)
+
+    current_path = posixpath.join(
+        publication_root,
+        "CURRENT",
+        f"year={execution_date:%Y}",
+        f"month={execution_date:%m}",
+        f"day={execution_date:%d}",
     )
-    current_path = posixpath.join(publication_root, "CURRENT")
 
     paths = {
         "raw": raw_path,
         "publication_root": publication_root,
         "staging_run": staging_run_path,
-        "stg": stg_path,
-        "quarantine": quarantine_path,
-        "metrics": metrics_path,
-        "manifest": manifest_path,
+        "staging_stg": stg_path,
+        "staging_quarantine": quarantine_path,
+        "staging_metadata": metadata_path,
         "published_run": published_run_path,
         "current": current_path,
     }
 
-    logger.info("Пути запуска: %s", paths)
+    logger.info(f"Пути запуска: {paths}")
     return paths
+
 
 # 4. identify_and_validate_input_files
 # - Проверить наличие входных файлов и их стабильность на время обработки.
@@ -191,33 +189,37 @@ def identify_and_validate_input_files(session, raw_path):
         "frp",
         "daynight",
     ]
-    
+
     raw = session._jvm.org.apache.hadoop.fs.Path(raw_path)
     fs = raw.getFileSystem(session._jsc.hadoopConfiguration())
 
     if not fs.exists(raw):
-        raise FileNotFoundError(
-            f"RAW-каталог не существует: {raw_path}"
-        )
+        raise FileNotFoundError(f"RAW-каталог не существует: {raw_path}")
 
     if not fs.getFileStatus(raw).isDirectory():
-        raise ValueError(
-            f"Ожидался RAW-каталог, получен файл: {raw_path}"
-        )
+        raise ValueError(f"Ожидался RAW-каталог, получен файл: {raw_path}")
 
     statuses = fs.listStatus(raw)
-    input_files = [status.getPath() for status in statuses if status.isFile() and status.getPath().getName().lower().endswith(".csv")]
+    input_files = sorted(
+        (
+            status.getPath()
+            for status in statuses
+            if status.isFile() and status.getPath().getName().lower().endswith(".csv")
+        ),
+        key=lambda path: path.toString(),
+    )
+
     if not input_files:
-        raise FileExistsError(f"В raw каталоге отсутствуют файлы")
+        raise FileNotFoundError(f"В RAW-каталоге отсутствуют CSV-файлы: {raw_path}")
 
     result = []
 
     for file_path in input_files:
         file_name = file_path.getName()
         df = (
-            session.read
-            .option("header", True)
+            session.read.option("header", True)
             .option("inferSchema", False)
+            .schema(schema)
             .csv(file_path.toString())
         )
 
@@ -225,20 +227,22 @@ def identify_and_validate_input_files(session, raw_path):
         # if len(df.columns) == 0:
         #     raise ValueError(f"Файл пуст: {file_path}")
 
-        
-        if not expected_columns == df.columns:
+        if expected_columns != df.columns:
             raise ValueError(
                 f"Неверный заголовок CSV: {file_path}\n"
                 f"Ожидалось: {expected_columns}\n"
                 f"Получено:  {df.columns}"
             )
 
-        result.append({
-            "path": file_path.toString(),
-            "file_name": file_name,
-        })
+        result.append(
+            {
+                "path": file_path.toString(),
+                "file_name": file_name,
+            }
+        )
 
     return result
+
 
 # 5. read_source_records
 # - Изначально читать исходные поля как строки, чтобы сохранять исходные значения
@@ -259,8 +263,9 @@ def build_record_rules(execution_date):
 
     def as_integer(field):
         return F.expr(f"try_cast(trim(`{field}`) AS INT)")
+
     # - latitude: обязательное числовое значение в диапазоне [-90, 90].
-    
+
     latitude = as_double("latitude")
     lat_err = latitude.isNull() | (~latitude.between(-90, 90))
 
@@ -294,9 +299,7 @@ def build_record_rules(execution_date):
     # - confidence: допустимы только l, n, h; значение l считается корректным.
     # - daynight: допустимы только D или N.
     confidence = F.trim(F.col("confidence"))
-    confidence_err = confidence.isNull() | (
-        ~confidence.isin(["l", "n", "h"])
-    )
+    confidence_err = confidence.isNull() | (~confidence.isin(["l", "n", "h"]))
 
     daynight = F.trim(F.col("daynight"))
     daynight_err = daynight.isNull() | (~daynight.isin(["D", "N"]))
@@ -341,23 +344,21 @@ def build_record_rules(execution_date):
 def classify_records(df, execution_date):
     rules = build_record_rules(execution_date)
 
-    # - Формировать полный список идентификаторов нарушенных правил для каждой отклонённой записи.
-    df_classified = df.withColumn(
+    return df.withColumn(
         "error_codes",
         F.array_compact(
             F.array(
-                F.when(rules.lat_err, F.lit("ERR_LATITUDE")),
-                F.when(rules.lon_err, F.lit("ERR_LONGITUDE")),
-                F.when(rules.acq_date_err, F.lit("ERR_ACQ_DATE")),
-                F.when(rules.acq_time_err, F.lit("ERR_ACQ_TIME")),
-                F.when(rules.confidence_err, F.lit("ERR_CONFIDENCE")),
-                F.when(rules.daynight_err, F.lit("ERR_DAYNIGHT")),
-                F.when(rules.numeric_err, F.lit("ERR_NUMERIC_VALUES")),
-                F.when(rules.missing_err, F.lit("ERR_MISSING_MANDATORY")),
+                F.when(rules["lat_err"], F.lit("ERR_LATITUDE")),
+                F.when(rules["lon_err"], F.lit("ERR_LONGITUDE")),
+                F.when(rules["acq_date_err"], F.lit("ERR_ACQ_DATE")),
+                F.when(rules["acq_time_err"], F.lit("ERR_ACQ_TIME")),
+                F.when(rules["confidence_err"], F.lit("ERR_CONFIDENCE")),
+                F.when(rules["daynight_err"], F.lit("ERR_DAYNIGHT")),
+                F.when(rules["numeric_err"], F.lit("ERR_NUMERIC_VALUES")),
+                F.when(rules["missing_err"], F.lit("ERR_MISSING_MANDATORY")),
             )
         ),
     )
-    return df_classified
 
 
 # 8. build_quarantine_dataset
@@ -368,19 +369,13 @@ def classify_records(df, execution_date):
 # - Записывать Parquet в изолированный рабочий каталог запуска.
 # - Если отклонённых записей нет, представлять карантин как явно пустой набор данных
 #   с ожидаемой схемой и количеством записей 0.
-def build_quarantine_dataset(df, source_file_name):
-    # Разделяем датафрейм на валидные и ошибочные записи
-    # Если массив ошибок пустой — запись корректна
-    quarantine_df = df.filter(F.size(F.col("error_codes")) > 0)
-
-    quarantine_df = (
-        quarantine_df.withColumn("source_file", F.lit(source_file_name))
+def build_quarantine_dataset(df):
+    return (
+        df.filter(F.size(F.col("error_codes")) > 0)
         .withColumn("processed_at", F.current_timestamp())
         .withColumn("failed_rules", F.col("error_codes"))
         .drop("error_codes")
     )
-
-    return quarantine_df
 
 
 #
@@ -412,17 +407,25 @@ def deduplicate_valid_records(df):
     ]
     valid_records = df.filter(F.size(F.col("error_codes")) == 0).drop("error_codes")
 
-    window_spec = Window.partitionBy(dedup_key).orderBy(
-        F.col("acq_time").asc(), F.col("version").asc(), F.col("confidence").asc()
+    window_spec = Window.partitionBy(*dedup_key).orderBy(
+        F.col("source_file").asc(),
+        F.col("version").asc(),
+        F.col("confidence").asc(),
+        F.col("scan").asc(),
+        F.col("track").asc(),
+        F.col("daynight").asc(),
     )
-    window_count_spec = Window.partitionBy(dedup_key)
+
+    window_count_spec = Window.partitionBy(*dedup_key)
 
     df_deduplicated = (
         valid_records.withColumn("row_num", F.row_number().over(window_spec))
-        .withColumn("total_in_group", F.count("*").over(window_count_spec))
-        .withColumn("duplicate_count", F.col("total_in_group") - 1)
+        .withColumn(
+            "duplicate_count",
+            F.count("*").over(window_count_spec) - 1,
+        )
         .filter(F.col("row_num") == 1)
-        .drop("row_num", "total_in_group")
+        .drop("row_num")
     )
 
     return df_deduplicated
@@ -439,89 +442,88 @@ def deduplicate_valid_records(df):
 # - Если равенство не выполняется, завершить запуск ошибкой,
 #   а не публиковать несогласованные метрики.
 # - Хранить метрики в структурированном машинно-читаемом формате и в логах.
-def calculate_metrics(session, source_file_path, dt):
-    df = session.read.format("csv").option("header", "true").load(source_file_path)
+def calculate_metrics(session, source_path, dt, logger):
+    df = (
+        session.read.format("csv")
+        .option("header", True)
+        .option("inferSchema", False)
+        .option("enforceSchema", False)
+        .option("mode", "FAILFAST")
+        .schema(schema)
+        .load(source_path)
+        .withColumn("source_file", F.input_file_name())
+    )
 
     classified_df = classify_records(df, dt).cache()
+    stg_df = None
+
+    files = identify_and_validate_input_files(session, source_path)
 
     try:
-        quarantine_df = build_quarantine_dataset(classified_df, source_file_path)
+        quarantine_df = build_quarantine_dataset(classified_df)
 
         metrics_row = classified_df.agg(
             F.count("*").alias("input_count"),
-            F.sum(F.when(F.size(F.col("error_codes")) > 0, 1).otherwise(0)).alias(
+            F.sum(F.when(F.size("error_codes") > 0, 1).otherwise(0)).alias(
                 "invalid_count"
             ),
-            # Счётчики каждого правила
             F.sum(
-                F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_LATITUDE"), 1
-                ).otherwise(0)
+                F.when(F.array_contains("error_codes", "ERR_LATITUDE"), 1).otherwise(0)
             ).alias("cnt_lat"),
             F.sum(
-                F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_LONGITUDE"), 1
-                ).otherwise(0)
+                F.when(F.array_contains("error_codes", "ERR_LONGITUDE"), 1).otherwise(0)
             ).alias("cnt_lon"),
             F.sum(
-                F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_ACQ_DATE"), 1
-                ).otherwise(0)
+                F.when(F.array_contains("error_codes", "ERR_ACQ_DATE"), 1).otherwise(0)
             ).alias("cnt_date"),
             F.sum(
-                F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_ACQ_TIME"), 1
-                ).otherwise(0)
+                F.when(F.array_contains("error_codes", "ERR_ACQ_TIME"), 1).otherwise(0)
             ).alias("cnt_time"),
             F.sum(
-                F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_CONFIDENCE"), 1
-                ).otherwise(0)
+                F.when(F.array_contains("error_codes", "ERR_CONFIDENCE"), 1).otherwise(
+                    0
+                )
             ).alias("cnt_conf"),
             F.sum(
-                F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_DAYNIGHT"), 1
-                ).otherwise(0)
+                F.when(F.array_contains("error_codes", "ERR_DAYNIGHT"), 1).otherwise(0)
             ).alias("cnt_daynight"),
             F.sum(
                 F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_NUMERIC_VALUES"), 1
+                    F.array_contains("error_codes", "ERR_NUMERIC_VALUES"), 1
                 ).otherwise(0)
             ).alias("cnt_numeric"),
             F.sum(
                 F.when(
-                    F.array_contains(F.col("error_codes"), "ERR_MISSING_MANDATORY"), 1
+                    F.array_contains("error_codes", "ERR_MISSING_MANDATORY"), 1
                 ).otherwise(0)
             ).alias("cnt_missing"),
-        ).collect()[
-            0
-        ]  # 1 ряд не должно падать
+        ).first()
 
         input_count = metrics_row["input_count"] or 0
         invalid_count = metrics_row["invalid_count"] or 0
 
         stg_df = deduplicate_valid_records(classified_df).cache()
-        dup_and_out = stg_df.agg(
-            F.sum("duplicate_count").alias("duplicate_count"),
+
+        counts = stg_df.agg(
+            F.coalesce(F.sum("duplicate_count"), F.lit(0)).alias("duplicate_count"),
             F.count("*").alias("output_count"),
-        ).collect()[0]
+        ).first()
 
-        duplicate_count = int(dup_and_out["duplicate_count"] or 0)
-        output_count = dup_and_out["output_count"] or 0
+        duplicate_count = int(counts["duplicate_count"])
+        output_count = int(counts["output_count"])
 
-        # 4. Проверка балансового равенства
-        expected_input = invalid_count + duplicate_count + output_count
-        if input_count != expected_input:
+        if input_count != invalid_count + duplicate_count + output_count:
             raise ValueError(
-                f"Data pipeline audit failed! Inconsistent metrics found. "
-                f"Expected input_count {expected_input} (invalid:{invalid_count} + "
-                f"duplicate:{duplicate_count} + output:{output_count}), "
-                f"but got actual input_count: {input_count}."
+                "Нарушен баланс записей: "
+                f"input={input_count}, "
+                f"invalid={invalid_count}, "
+                f"duplicates={duplicate_count}, "
+                f"output={output_count}"
             )
 
-        # 5. Формируем структурированный машинно-читаемый JSON для логов / внешних систем
         metrics_report = {
-            "source_file": source_file_path,
+            "source_path": source_path,
+            "files": [{"path": f["path"], "file_name": f["file_name"]} for f in files],
             "execution_date": dt,
             "input_count": input_count,
             "invalid_count": invalid_count,
@@ -539,16 +541,13 @@ def calculate_metrics(session, source_file_path, dt):
             },
         }
 
-        # Пример вывода в логи (можно заменить на logging.info)
-        print(f"METRICS_REPORT: {metrics_report}")
-
         return metrics_report, quarantine_df, stg_df
 
-    finally:
-        # Обязательно очищаем оперативную память кластера
+    except Exception:
         classified_df.unpersist()
-        if "stg_df" in locals():
+        if stg_df is not None:
             stg_df.unpersist()
+        raise
 
 
 #
@@ -557,7 +556,17 @@ def calculate_metrics(session, source_file_path, dt):
 #   считается допустимым пустым входом.
 #   Для него публикуются пустые STG и карантин.
 # - Не обновлять CURRENT при неуспешном запуске.
-def enforce_publication_policy(manifest, metrics_report, quarantine_df, stg_df, logger):
+def publish_staging_run(
+    session,
+    metadata_path,
+    quarantine_path,
+    stg_path,
+    manifest,
+    metrics_report,
+    quarantine_df,
+    stg_df,
+    logger,
+):
     # - Непустой вход, в котором все записи отклонены, не равнозначен пустому входу.
     # - По умолчанию для полностью невалидного входа завершать запуск ошибкой,
     #   пока отдельная эксплуатационная политика явно не разрешит публикацию пустого STG.
@@ -567,20 +576,29 @@ def enforce_publication_policy(manifest, metrics_report, quarantine_df, stg_df, 
     ):
         try:
             # - Сохранять метрики в рабочем каталоге неуспешного запуска для диагностики.
-            write_metrics_and_manifest(manifest, metrics_report, logger)
+            if not write_metrics_and_manifest(
+                session, metadata_path, manifest, metrics_report, logger
+            ):
+                raise ValueError(f"Ошибка записи манифеста по пути {metadata_path}")
         except Exception as e:
             logger.error(
-                f"ФУЛ ФАКАП!!!! ошибка при ошибке, не удалось сохранить манифест и репорт"
+                f"ФУЛ ФАКАП!!!! ошибка при ошибке, не удалось сохранить манифест и репорт: {e}"
             )
             raise ValueError(f"{e}")
         raise ValueError(
-            f'{metrics_report["invalid_count"]} из {metrics_report["input_count"]} некорректны, проверьте данные в {metrics_report["source_file"]}!'
+            f'{metrics_report["invalid_count"]} из {metrics_report["input_count"]} некорректны, проверьте данные в {metrics_report["source_path"]}!'
         )
 
     try:
-        write_and_verify_stg(stg_df, logger)
-        write_and_verify_quarantine(quarantine_df, logger)
-        write_metrics_and_manifest(manifest, metrics_report, logger)
+        write_and_verify_stg(
+            stg_path, stg_df, metrics_report["output_count"], logger
+        )
+        write_and_verify_quarantine(
+            quarantine_path, quarantine_df, metrics_report["invalid_count"], logger
+        )
+        write_metrics_and_manifest(
+            session, metadata_path, manifest, metrics_report, logger
+        )
     except Exception as e:
         logger.error(f"Сбой публикации набора данных: {e}")
         raise ValueError(f"Пайплайн остановлен из-за ошибки записи/верификации: {e}")
@@ -594,20 +612,22 @@ def enforce_publication_policy(manifest, metrics_report, quarantine_df, stg_df, 
 #   сравнив фактическое количество записей с output_count.
 # - Пустой корректный вход должен приводить к валидному пустому набору STG
 #   со стабильной схемой.
-def write_and_verify_stg(df, expected_count, stg_path, logger):
+def write_and_verify_stg(stg_path, df, expected_count, logger):
     try:
-        logger.info(f"Запись stg в рабочий каталог")
-        df.write.mode("overwrite").format("parquet").options("codec", "snappy").save(
-            stg_path
-        )
+        logger.info("Запись stg в рабочий каталог")
+        df.write.mode("overwrite").format("parquet").option(
+            "compression", "snappy"
+        ).save(stg_path)
 
         actual_count = df.sparkSession.read.parquet(stg_path).count()
+
         if actual_count != expected_count:
             raise ValueError(
                 f"Верификация STG провалена! Ожидалось записей: {expected_count}, "
                 f"фактически записано на HDFS: {actual_count}"
             )
         logger.info("STG слой успешно записан и верифицирован.")
+        return True
     except Exception as e:
         logger.error(f"Ошибка при записи/верификации STG: {e}")
         raise
@@ -616,33 +636,36 @@ def write_and_verify_stg(df, expected_count, stg_path, logger):
 #
 # 13. write_and_verify_quarantine
 # - Записывать отклонённые записи в Parquet в рабочем каталоге запуска.
-def write_and_verify_quarantine(df, expected_count, quarantine_path, logger):
+def write_and_verify_quarantine(quarantine_path, df, expected_count, logger):
     try:
         logger.info(f"Запись карантина в рабочий каталог: {quarantine_path}")
-        df.write.mode("overwrite").format("parquet").save(quarantine_path)
-        
+        df.write.mode("overwrite").format("parquet").option(
+            "compression", "snappy"
+        ).save(quarantine_path)
+
         # - Проверить схему карантина и сравнить количество записей с invalid_count.
         quarantine_check = df.sparkSession.read.parquet(quarantine_path)
         actual_count = quarantine_check.count()
-        
+
         if actual_count != expected_count:
             raise ValueError(
                 f"Верификация карантина провалена! Ожидалось записей: {expected_count}, "
                 f"фактически записано: {actual_count}"
             )
-            
+
         # - Убедиться, что у каждой записи карантина заполнено поле failed_rules.
         empty_rules_count = quarantine_check.filter(
             F.col("failed_rules").isNull() | (F.size(F.col("failed_rules")) == 0)
         ).count()
-        
+
         if empty_rules_count > 0:
             raise ValueError(
                 f"Критическое нарушение контракта карантина! Найдено {empty_rules_count} "
                 f"записей без указания кодов ошибок (failed_rules)."
             )
-            
+
         logger.info("Карантин успешно записан и верифицирован.")
+        return True
     except Exception as e:
         logger.error(f"Ошибка при записи/верификации карантина: {e}")
         raise
@@ -654,38 +677,85 @@ def write_and_verify_quarantine(df, expected_count, quarantine_path, logger):
 #   версии схемы и правил, счётчики и относительные пути результатов.
 # - Указывать статус набора, означающий готовность к публикации.
 # - На этом этапе ещё не помечать набор как зафиксированный.
-def write_metrics_and_manifest(session, metrics, manifest, metadata_path, logger):
+def write_metrics_and_manifest(session, metadata_path, manifest, metrics, logger):
+    fs = None
+
     try:
-        logger.info(f"Запись технических артефактов в: {metadata_path}")
-        
-        # Обогащаем манифест статусом готовности (staging), но не фиксируем (committed = False)
+        logger.info(f"Запись метрик и манифеста: {metadata_path}")
+
+        jvm = session._jvm
+        conf = session.sparkContext._jsc.hadoopConfiguration()
+        metadata = jvm.org.apache.hadoop.fs.Path(metadata_path)
+        fs = metadata.getFileSystem(conf)
+
+        if not fs.exists(metadata) and not fs.mkdirs(metadata):
+            raise OSError(f"Не удалось создать каталог метаданных: {metadata_path}")
+
         full_manifest = {
-            "run_id": manifest.get("run_id"),
-            "execution_date": manifest.get("execution_date"),
-            "source_files": manifest.get("source_files"),
-            "schema_version": manifest.get("schema_version"),
-            "rules_version": manifest.get("rules_version"),
+            "run_id": manifest["run_id"],
+            "execution_date": manifest["execution_date"],
+            "source_files_path": manifest["source_files_path"],
+            "source_files": metrics["files"],
+            "schema_version": manifest["schema_version"],
+            "rules_version": manifest["rules_version"],
             "status": "READY_FOR_PUBLICATION",
             "is_committed": False,
-            "metrics_summary": metrics
+            "metrics_summary": {
+                key: value for key, value in metrics.items() if key != "files"
+            },
         }
 
-        sc = session.sparkContext()
-        
-        metrics_json_str = json.dumps(metrics, ensure_ascii=False, indent=4)
-        manifest_json_str = json.dumps(full_manifest, ensure_ascii=False, indent=4)
-        
-        # Запись на HDFS через механизм Spark (безопасно для распределенной среды)
-        sc.parallelize([metrics_json_str], 1).saveAsTextFile(f"{metadata_path}/metrics.json")
-        sc.parallelize([manifest_json_str], 1).saveAsTextFile(f"{metadata_path}/manifest.json")
-        
-        logger.info("Метрики и манифест успешно сохранены.")
+        artifacts = {
+            "metrics.json": metrics,
+            "manifest.json": full_manifest,
+        }
+
+        for filename, payload in artifacts.items():
+            target = jvm.org.apache.hadoop.fs.Path(metadata, filename)
+
+            content = json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+            # Не перезаписываем существующий артефакт вслепую.
+            if fs.exists(target):
+                raise FileExistsError(f"Файл метаданных уже существует: {target}")
+
+            stream = fs.create(target, False)
+
+            try:
+                stream.write(bytearray(content.encode("utf-8")))
+                stream.hflush()
+            finally:
+                stream.close()
+
+            logger.info(f"Записан файл: {target}")
+
+        return True
+
     except Exception as e:
-        logger.error(f"Ошибка сохранения файлов манифеста/метрики: {e}")
+        logger.error(f"Ошибка сохранения метрик и манифеста: {metadata_path}: {e}")
         raise
 
 
-#
+def read_json(session, path):
+    jvm = session._jvm
+    conf = session.sparkContext._jsc.hadoopConfiguration()
+    Path = jvm.org.apache.hadoop.fs.Path
+
+    hdfs_path = Path(str(path))
+    fs = hdfs_path.getFileSystem(conf)
+
+    stream = fs.open(hdfs_path)
+    try:
+        data = jvm.org.apache.commons.io.IOUtils.toByteArray(stream)
+        content = bytes(data).decode("utf-8")
+        return json.loads(content)
+    finally:
+        stream.close()
+
 # 15. publish_immutable_bundle
 # - Переместить полностью подготовленный набор из рабочего каталога в неизменяемый
 #   путь опубликованного запуска, используя переименование HDFS в пределах одной
@@ -694,71 +764,109 @@ def write_metrics_and_manifest(session, metrics, manifest, metadata_path, logger
 #   Не перезаписывать его вслепую.
 # - Не удалять автоматически рабочие или опубликованные каталоги при неоднозначном состоянии.
 #   Оставлять такие случаи для контролируемого восстановления.
-def publish_immutable_bundle(session, staging_path, current_path, logger):
-    sc = session.sparkContext
-    conf = sc._jsc.hadoopConfiguration()
-    
-    # Инициализируем Java-классы для работы с HDFS API
-    Path_cl = sc._jvm.org.apache.hadoop.fs.Path
-    
-    src_path = Path_cl(staging_path)
-    dst_path = Path_cl(current_path)
-    
-    # Получаем инстанс файловой системы для целевого пути
-    fs = dst_path.getFileSystem(conf)
+def publish_immutable_run(
+    session, metadata_path, staging_path, published_path, run_id, logger
+):
+    jvm = session._jvm
+    conf = session.sparkContext._jsc.hadoopConfiguration()
+    Path = jvm.org.apache.hadoop.fs.Path
 
-    logger.info(f"Запуск транзакции публикации: {staging_path} -> {current_path}")
+    src = Path(staging_path)
+    dst = Path(published_path)
+    fs = dst.getFileSystem(conf)
 
-    if fs.exists(dst_path):
-        logger.warning(f"Целевой путь {current_path} уже существует. Проверяем состояние...")
-        
-        # Проверяем, лежит ли там валидный манифест успешного завершенного запуска
-        manifest_path = Path_cl(f"{current_path}/manifest.json")
-        
-        if fs.exists(manifest_path):
-            # Если манифест на месте — это тот же успешный запуск, повторно писать не нужно (идемпотентность)
-            logger.info("Обнаружен готовый манифест публикации. Этот запуск уже был успешно завершен.")
-            return True
-        else:
-            # Если папка есть, но манифеста нет — состояние неоднозначно (например, прерванная прошлая запись)
+    logger.info(f"Публикация набора: {src} -> {dst}")
+
+    def verify_bundle(root):
+        manifest_path = Path(root, "metadata/manifest.json")
+        metrics_path = Path(root, "metadata/metrics.json")
+        stg_path = Path(root, "stg")
+        quarantine_path = Path(root, "quarantine")
+
+        required_paths = [
+            manifest_path,
+            metrics_path,
+            stg_path,
+            quarantine_path,
+        ]
+
+        missing = [str(path) for path in required_paths if not fs.exists(path)]
+        if missing:
+            raise RuntimeError(f"Неполный набор результатов: {missing}")
+
+        manifest = read_json(session, manifest_path)
+        metrics = read_json(session, metrics_path)
+
+        if manifest.get("status") != "READY_FOR_PUBLICATION":
+            raise RuntimeError("Манифест не подтверждает готовность набора.")
+
+        if manifest.get("is_committed") is not False:
+            raise RuntimeError("Перед фиксацией ожидался is_committed=false.")
+
+        if manifest.get("run_id") is None:
+            raise RuntimeError("В манифесте отсутствует run_id.")
+
+        if manifest.get("metrics_summary", {}).get("output_count") != metrics.get(
+            "output_count"
+        ):
+            raise RuntimeError("Метрики манифеста не совпадают с metrics.json.")
+
+        return manifest
+
+    if fs.exists(dst):
+        manifest_path = Path(dst, "metadata/manifest.json")
+
+        if not fs.exists(manifest_path):
             raise RuntimeError(
-                f"Критическая неоднозначность данных! Каталог {current_path} существует, "
-                f"но не содержит manifest.json. Автоматическое удаление запрещено во избежание потери данных. "
+                f"Критическая неоднозначность данных! Каталог {dst} существует, "
+                f"но не содержит metadata/manifest.json. Автоматическое удаление запрещено во избежание потери данных. "
                 f"Требуется ручное вмешательство администратора."
             )
 
-    # 3. Проверяем, что исходный рабочий каталог вообще существует и готов к публикации
-    if not fs.exists(src_path):
-        raise FileNotFoundError(
-            f"Ошибка публикации: рабочий каталог запуска {staging_path} не найден на HDFS."
+        existing = read_json(session, manifest_path)
+
+        if existing.get("run_id") != run_id:
+            raise RuntimeError(
+                f"В {dst} находится другой запуск: "
+                f"{existing.get('run_id')!r}, "
+                f"ожидался {run_id!r}"
+            )
+
+        verify_bundle(dst)
+
+        logger.info(
+            f"Неизменяемый запуск уже опубликован, "
+            f"повторное перемещение пропускается: {dst}"
         )
-        
-    staging_manifest_path = Path_cl(f"{staging_path}/manifest.json")
+        return True
+
+    # Проверяем, что исходный рабочий каталог вообще существует и готов к публикации
+    if not fs.exists(src) or not fs.getFileStatus(src).isDirectory():
+        raise FileNotFoundError(f"Рабочий каталог запуска не найден: {src}")
+
+    staging_manifest_path = Path(metadata_path, "manifest.json")
     if not fs.exists(staging_manifest_path):
         raise ValueError(
-            f"Ошибка публикации: в рабочем каталоге {staging_path} отсутствует manifest.json. "
+            f"Ошибка публикации: в рабочем каталоге {metadata_path} отсутствует manifest.json. "
             f"Набор данных не прошел верификацию качества и не может быть опубликован."
         )
 
-    # 4. Выполняем атомарное переименование (HDFS Rename) в пределах одной ФС
-    try:
-        logger.info(f"Выполняется атомарный HDFS rename...")
-        # Метод rename возвращает True, если перемещение прошло успешно
-        success = fs.rename(src_path, dst_path)
-        
-        if not success:
-            raise RuntimeError(
-                f"HDFS rename вернул False при перемещении {staging_path} в {current_path}. "
-                f"Возможная причина: отсутствие прав или межпространственное (cross-filesystem) перемещение."
-            )
-            
-        logger.info(f"Набор данных успешно и неизменяемо опубликован по пути: {current_path}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Аварийный сбой при выполнении атомарного переименования на HDFS: {e}")
-        # Оставляем каталоги нетронутыми для контролируемого восстановления, ничего не удаляем
-        raise
+    verify_bundle(src)
+
+    # HDFS rename атомарен в пределах одной файловой системы.
+    # Родительские каталоги создаём до перемещения.
+    parent = dst.getParent()
+    if not fs.exists(parent) and not fs.mkdirs(parent):
+        raise OSError(f"Не удалось создать каталог публикации: {parent}")
+
+    if not fs.rename(src, dst):
+        raise RuntimeError(f"Не удалось переместить набор: {src} -> {dst}")
+
+    # Проверяем результат после перемещения.
+    verify_bundle(dst)
+
+    logger.info(f"Набор опубликован: {dst}")
+    return True
 
 
 # 16. commit_current_run
@@ -771,8 +879,127 @@ def publish_immutable_bundle(session, staging_path, current_path, logger):
 # - Если конкурентные публикации нельзя безопасно сериализовать или обнаружить,
 #   завершать запуск ошибкой, а не позволять более старому запуску незаметно
 #   заменить более новую зафиксированную версию.
-def commit_current_run():
-    pass
+
+
+def commit_current_run(session, published_run_path, current_path, logger):
+    jvm = session._jvm
+    gateway = session.sparkContext._gateway
+    conf = session.sparkContext._jsc.hadoopConfiguration()
+    Path = jvm.org.apache.hadoop.fs.Path
+    FileUtil = jvm.org.apache.hadoop.fs.FileUtil
+
+    run_path = Path(published_run_path)
+    source = Path(run_path, "stg")
+    current = Path(current_path)
+    backup = Path(current_path + ".backup")
+    temp = Path(current_path + f".tmp-{run_path.getName()}")
+
+    fs = current.getFileSystem(conf)
+
+    # Восстановление после предыдущего прерванного запуска.
+    if fs.exists(backup):
+        if fs.exists(current):
+            # Новый CURRENT уже появился: осталась старая резервная копия.
+            if not fs.delete(backup, True):
+                raise RuntimeError(f"Не удалось удалить резервную копию: {backup}")
+        else:
+            # CURRENT отсутствует: возвращаем предыдущие данные.
+            if not fs.rename(backup, current):
+                raise RuntimeError(f"Не удалось восстановить CURRENT из {backup}")
+
+    if not fs.exists(source):
+        raise FileNotFoundError(f"STG запуска не найден: {source}")
+
+    # Проверяем, что STG запуска читается и содержит ожидаемое число строк.
+    manifest_path = Path(run_path, "metadata/manifest.json")
+    metrics_path = Path(run_path, "metadata/metrics.json")
+
+    for path in (manifest_path, metrics_path):
+        if not fs.exists(path):
+            raise FileNotFoundError(f"Не найден файл: {path}")
+
+    # manifest = json.loads(session.read.text(manifest_path.toString()).first()[0])
+    # metrics = json.loads(session.read.text(metrics_path.toString()).first()[0])
+    manifest = read_json(session, manifest_path)
+    metrics = read_json(session, metrics_path)
+
+    if manifest.get("status") != "READY_FOR_PUBLICATION":
+        raise ValueError("Запуск не готов к публикации")
+
+    expected_count = metrics.get("summary", {}).get("output_count")
+    if expected_count is None:
+        expected_count = metrics.get("output_count")
+
+    if expected_count is None:
+        raise ValueError("В metrics.json не найден output_count")
+
+    actual_count = session.read.parquet(source.toString()).count()
+
+    if actual_count != int(expected_count):
+        raise RuntimeError(
+            f"Количество записей STG не совпало: ожидалось {expected_count}, получено {actual_count}"
+        )
+
+    parent = current.getParent()
+    if not fs.exists(parent) and not fs.mkdirs(parent):
+        raise RuntimeError(f"Не удалось создать каталог: {parent}")
+
+    # Готовим полную копию, не затрагивая текущие опубликованные данные.
+    if fs.exists(temp) and not fs.delete(temp, True):
+        raise RuntimeError(f"Не удалось очистить временный каталог: {temp}")
+
+    copied = FileUtil.copy(
+        fs,
+        source,
+        fs,
+        temp,
+        False,
+        conf,
+    )
+
+    if not copied:
+        raise RuntimeError(f"Не удалось скопировать STG в {temp}")
+
+    copied_count = session.read.parquet(temp.toString()).count()
+
+    if copied_count != int(expected_count):
+        fs.delete(temp, True)
+        raise RuntimeError(
+            f"Проверка копии не пройдена: "
+            f"ожидалось {expected_count}, получено {copied_count}"
+        )
+
+    # Сначала сохраняем прежнюю публикацию.
+    had_current = fs.exists(current)
+
+    if had_current and not fs.rename(current, backup):
+        fs.delete(temp, True)
+        raise RuntimeError(
+            f"Не удалось переместить CURRENT в резервную копию: " f"{current}"
+        )
+
+    try:
+        if not fs.rename(temp, current):
+            raise RuntimeError(f"Не удалось опубликовать новый STG: {current}")
+    except Exception:
+        # При обычной ошибке сразу восстанавливаем предыдущие данные.
+        if had_current and fs.exists(backup) and not fs.exists(current):
+            if not fs.rename(backup, current):
+                logger.error("Не удалось восстановить предыдущий CURRENT")
+        raise
+
+    logger.info(
+        f"STG опубликован: run_id={manifest.get('run_id')}, path={current}, rows={actual_count}"
+    )
+
+    # Удаляем резервную копию только после успешной публикации.
+    if had_current and fs.exists(backup):
+        if not fs.delete(backup, True):
+            logger.error(
+                f"Новый STG опубликован, но резервная копия осталась: {backup}"
+            )
+
+
 # 17. emit_final_status
 # - Записывать run_id, execution_date, путь зафиксированного манифеста,
 #   input_count, invalid_count, счётчики правил, duplicate_count, output_count
@@ -785,6 +1012,57 @@ def commit_current_run():
 # - Сохранять достаточный контекст для диагностики, не раскрывая секреты.
 # - Гарантированно останавливать SparkSession в блоке очистки.
 def main():
+    spark = None
+    try:
+        args = parse_and_validate_config()
+        spark = create_spark_session(args)
+
+        log4jLogger = spark._jvm.org.apache.log4j
+        logger = log4jLogger.LogManager.getLogger("pyspark_logger")
+
+        paths = resolve_run_paths(spark, args, logger)
+
+        manifest = {
+            "run_id": args.run_id,
+            "execution_date": args.execution_date,
+            "source_files_path": paths["raw"],
+            "schema_version": "1.0",
+            "rules_version": "1.0",
+        }
+
+        # трансформация
+        metrics_report, quarantine_df, stg_df = calculate_metrics(
+            spark, paths["raw"], args.execution_date, logger
+        )
+
+        publish_staging_run(
+            spark,
+            paths["staging_metadata"],
+            paths["staging_quarantine"],
+            paths["staging_stg"],
+            manifest,
+            metrics_report,
+            quarantine_df,
+            stg_df,
+            logger,
+        )
+
+        publish_immutable_run(
+            spark,
+            paths["staging_metadata"],
+            paths["staging_run"],
+            paths["published_run"],
+            args.run_id,
+            logger,
+        )
+
+        commit_current_run(spark, paths["published_run"], paths["current"], logger)
+    except Exception as e:
+        raise ValueError(f"{e}")
+    finally:
+        if spark is not None:
+            spark.stop()
+
 
 #
 # УПРАВЛЕНИЕ СРОКОМ ХРАНЕНИЯ И ВОССТАНОВЛЕНИЕ — ВНЕ ОСНОВНОГО ЗАПУСКА
@@ -810,3 +1088,6 @@ def main():
 # - Сбой после фиксации, но до подтверждения Airflow, безопасно обрабатывается повтором.
 # - Два параллельных запуска за одну дату не могут незаметно перезаписать фиксацию друг друга.
 # - Потребитель никогда не может увидеть STG одного запуска вместе с карантином другого.
+
+if __name__ == "__main__":
+    main()
