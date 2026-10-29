@@ -33,17 +33,24 @@
 
 ```mermaid
 graph TD
-  A[NASA FIRMS API] --> B[Airflow DAG: firms_raw_to_stg_v2]
-  C[Open-Meteo API] --> D[Edge Bridge :8765]
-  D --> E[Airflow DAG: nasa_openmeteo_extract]
-  B --> F[HDFS /raw/firms/...]
-  E --> G[HDFS /stg/open-meteo/...]
-  G --> H[Spark Job: payload validation]
-  H --> F[HDFS /raw/open-meteo/...]
-  F --> I[Аналитика / DWH-слой]
-  J[Postgres] --> K[Airflow Metadata]
-  L[Spark Cluster] --> H
-  M[Hadoop HDFS/YARN] --> F
+  A[NASA FIRMS API] --> B[Airflow DAG: firms_source_to_raw]
+  B --> C[HDFS /raw/firms/...]
+  C --> D[Airflow DAG: firms_raw_to_stg]
+  D --> E[HDFS /stg/firms/...]
+  
+  F[Open-Meteo API] --> G[Edge Bridge :8765]
+  G --> H[Airflow DAG: open_meteo_source_to_raw]
+  H --> I[HDFS /raw/open-meteo/...]
+  I --> J[Airflow DAG: open_meteo_raw_to_stg]
+  J --> K[HDFS /stg/open-meteo/...]
+  
+  E --> L[Аналитика / DWH-слой]
+  K --> L
+  M[Postgres] --> N[Airflow Metadata]
+  O[Hadoop HDFS/YARN] --> C
+  O --> E
+  O --> I
+  O --> K
 ```
 
 Кластер разворачивается в изолированной Docker-сети `cluster`. Каждый компонент вынесен в отдельный `docker-compose.yaml` для упрощения модульного управления.
@@ -80,8 +87,7 @@ HdfsCluster/
 ├── postgres/               # Инициализация и конфигурация PostgreSQL
 ├── infra/                  # Вспомогательные скрипты инфраструктуры
 ├── build.py                # CLI-обёртка для управления жизненным циклом кластера
-├── edge_bridge.py          # Локальный HTTP-прокси через Chrome/Edge CDP для Open-Meteo
-└── PIPELINE_AUDIT_REPORT.md # Детальный технический аудит проекта
+└── edge_bridge.py          # Локальный HTTP-прокси через Chrome/Edge CDP для Open-Meteo
 ```
 
 ## Требования
@@ -94,34 +100,65 @@ HdfsCluster/
 - Свободные порты: `8080`, `8088`, `9870`, `8020`, `9000`, `5432`, `8765` (и прочие порты, используемые стеком)
 - Для работы `edge_bridge.py` (при использовании Open-Meteo-пайплайна): запущенный Microsoft Edge/Google Chrome с включённым [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) (`--remote-debugging-port=9222`)
 
-> Рекомендуется выделить не менее 8–12 ГБ ОЗУ и 4–6 CPU-ядер для комфортного одновременного запуска всех стеков.
+> Рекомендуется выделить не менее 16 ГБ ОЗУ и 4 CPU-ядер для комфортного одновременного запуска всех стеков.
 
 ## Быстрый старт
 
 ### 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/<your-username>/HdfsCluster.git
-cd HdfsCluster
+git clone https://github.com/anatoliy266/MyLittleCluster.git
+cd MyLittleCluster
 ```
 
 ### 2. Создание файла секретов Airflow
 
-В директории `airflow/` необходимо создать файл `airflow.env`. Минимальный набор переменных можно ориентировать по текущим конфигурациям в репозитории. Обязателен как минимум конфиг для подключения к PostgreSQL и базовые настройки Airflow.
+В директории `airflow/` необходимо создать файл `airflow.env`. Минимальный обязательный набор переменных:
+
+1. Ключи можно сгенерировать командой: python3 -c "import secrets; print(secrets.token_hex(32))": \
+  `AIRFLOW__API_AUTH__JWT_SECRET`=your_jwt_secret_here \
+  `AIRFLOW__CORE__FERNET_KEY`=your_fernet_key_here \
+  `AIRFLOW__API__SECRET_KEY`=your_secret_key_here 
+
+2. Учетные данные администратора (Web UI) \
+  `AIRFLOW_ADMIN_USERNAME`=admin \
+  `AIRFLOW_ADMIN_PASSWORD`=your_secure_password 
+
+3. в проекте используется база данных posgres, развернутая в контейнере postgres, если база развернута в том же контейнере что и Airflow - AIRFLOW_DB_HOST=localhost либо лбой другой адрес доступный из сети cluster \
+`AIRFLOW_DB_USER`=airflow \
+`AIRFLOW_DB_PASSWORD`=airflow_db_password \
+`AIRFLOW_DB_NAME`=airflow \
+`AIRFLOW_DB_HOST`=postgres \
+`AIRFLOW_DB_PORT`=5432
+
+4. Строка подключения SQLAlchemy \
+Формат: `postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@${AIRFLOW_DB_HOST}:${AIRFLOW_DB_PORT}/${AIRFLOW_DB_NAME}` 
+
+    `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`=you://conn:string@localhost:5432/airflow
 
 ### 3. Инициализация HDFS
 
-При первом запуске требуется отформатировать NameNode и поправить права доступа на томах.
+При первом запуске требуется отформатировать NameNode.
 
-```bash
-python build.py init
-```
+1. Откройте `docker-compose.yml`, найдите сервис `namenode` и временно добавьте туда команду форматирования:
+   ```yaml
+     namenode:
+       # ......
+       command: ["hdfs", "namenode", "-format"]
+   ```
 
-Скрипт выполнит:
+2. Запустите контейнер для выполнения форматирования:
+   ```bash
+   docker compose up namenode
+   ```
+   *Контейнер успешно отформатирует файловую систему и завершит работу (остановится).*
 
-1. Форматирование `namenode` через compose-профиль `init`
-2. Ожидание завершения контейнера форматирования
-3. Корректировку владельцев `hadoop:hadoop` для томов `namenode_data` и `datanode_data`
+3. Удалите флаг -format из сервиса `namenode` `hadoop/docker-compose.yml`.
+  ```yaml
+     namenode:
+       # ......
+       command: ["hdfs", "namenode"]
+   ```
 
 ### 4. Запуск всего кластера
 
@@ -142,30 +179,23 @@ python build.py start
 
 ## Описание дата-пайплайна
 
-В проекте реализованы два независимых DAG'а.
+В проекте реализованы два независимых источника данных, каждый из которых разбит на связку DAG'ов `raw` и `stg`.
 
-### 1. `firms_raw_to_stg_v2` (NASA FIRMS)
+### 1. NASA FIRMS
 
-Ответственный за сбор данных о пожарах.
+| DAG | Этап | Описание |
+|---|---|---|
+| `firms_source_to_raw` (`FIRES/raw/firms_source_to_raw.py`) | Extract → Load to raw | Получение CSV по списку спутников (`VIIRS_NOAA20_NRT`, `VIIRS_NOAA21_NRT`) за `logical_date` напрямую с NASA FIRMS. Для проверки ответа используется spark-приложение `apps/spark_firms_payload_validation`. Валидные файлы сохраняются в `hdfs:///raw/nasa_firms/year=YYYY/month=MM/day=DD/`. |
+| `firms_raw_to_stg` (`FIRES/stg/firms_raw_to_stg.py`) | Raw → Stg | Чтение сырых CSV из `raw/`, приведение к единому виду, фильтрация/нормализация полей и запись в слой `stg/` для последующего использования. |
 
-| Этап | Описание |
-|---|---|
-| **Extract** | Запрос CSV по списку спутников (`VIIRS_SNPP_NRT`, `NOAA20_NRT`, `NOAA21_NRT`) за `logical_date`. Выполняется прямая загрузка по URL FIRMS. |
-| **Validation (raw-check)** | Базовая проверка ответа: Content-Type, наличие CSV-заголовка, минимальная валидность первых байт. |
-| **Load to HDFS (raw)** | Сохранение в `hdfs:///raw/firms/source=.../satellite=.../year=YYYY/month=MM/day=DD/` с перезаписью при повторном запуске. |
+### 2. Open-Meteo
 
-### 2. `nasa_openmeteo_extract` (Open-Meteo)
+| DAG | Этап | Описание |
+|---|---|---|
+| `open_meteo_source_to_raw` (`open-meteo/raw/open_meteo_source_to_raw.py`) | Extract → Load to raw | Разбиение `bounding_box` на чанки, запрос через `edge_bridge.py` (CDP) к Open-Meteo API. Полученные JSON сохраняются в `hdfs:///raw/open-meteo/year=YYYY/month=MM/day=DD/`. |
+| `open_meteo_raw_to_stg` (`open-meteo/stg/open_meteo_raw_to_stg.py`) | Raw → Stg | Обработка сырых JSON из `raw/`, трансформация структуры, валидация/приведение к единому виду и загрузка в `hdfs:///stg/open-meteo/year=YYYY/month=MM/day=DD/`. |
 
-Более многоступенчатый пайплайн с валидацией через Spark.
-
-| Этап | Описание |
-|---|---|
-| **Prepare areas** | Разбиение целевого `bounding_box` на чанки для построчного/пообластного сбора данных. Параметры запроса формируются на основе списка `models`. |
-| **Extract** | Для каждого чанка выполняется запрос через `edge_bridge.py`. Ответ в формате JSON сохраняется во временное хранилище для последующей обработки. |
-| **Store to staging (HDFS)** | Файлы копируются в `hdfs:///stg/open-meteo/.../year=YYYY/month=MM/day=DD/`. |
-| **Spark validation** | `SparkSubmitOperator` запускает `apps/spark_open_meteo_payload_validation.py`. Задача проверяет читаемость JSON, базовую структуру и целостность payload перед публикацией. |
-| **Publish to raw** | После успешной валидации валидные файлы перемещаются в слой `raw/` по той же партиционированной схеме. |
-| **Retry-ветка** | Реализованы дополнительные задачи для повторного извлечения/валидации при частичном падении DAG'а. |
+Весь пайплайн оркестрируется Airflow. Данные хранятся в HDFS с партиционированием по дате.
 
 ## HDFS-структура данных
 
@@ -174,21 +204,18 @@ python build.py start
 ```text
 hdfs://namenode:8020/
 ├── raw/
-│   ├── firms/
-│   │   └── source=firms_modaps/
-│   │       └── satellite={VIIRS_SNPP_NRT|NOAA20_NRT|NOAA21_NRT}/
-│   │           └── year=YYYY/month=MM/day=DD/
-│   └── open-meteo/
-│       └── area={...}/
-│           └── year=YYYY/month=MM/day=DD/
-├── stg/
-│   └── open-meteo/
-│       └── area={...}/
-│           └── year=YYYY/month=MM/day=DD/
-└── raw/logs/airflow/  # (настраиваемый путь для remote-логирования)
-```
+│   ├── nasa_firms/
+│   |   └── year=YYYY/month=MM/day=DD/
+│   ├── open-meteo/
+│   |   └── year=YYYY/month=MM/day=DD/
+|   └── logs/airflow/
+└── stg/
+    ├── nasa_firms/
+    |   └── year=YYYY/month=MM/day=DD/
+    └── open-meteo/
+         └── year=YYYY/month=MM/day=DD/
 
-Такой подход упрощает последующую фильтрацию по дате, инкрементальную загрузку и построение витрин в аналитических слоях.
+```
 
 ## Edge-bridge для Open-Meteo
 
@@ -211,7 +238,7 @@ pip install websocket-client
 python edge_bridge.py
 ```
 
-> Данный подход используется в рамках учебного стенда для обойти отдельные сетевые ограничения и наглядно продемонстрировать работу с CDP.
+> Данный подход используется в рамках учебного стенда для преодоления отдельных сетевых ограничений, доступ к апи open meteo через браузер должен быть настроен отдельно
 
 ## Конфигурация и переменные
 
@@ -240,28 +267,15 @@ python edge_bridge.py
 
 В DAG'ах используются переменные Airflow (например, токен для NASA FIRMS). Их можно задать через `Admin → Variables` в Airflow UI.
 
-## Управление кластером
-
-Управление осуществляется через `build.py`:
-
-| Команда | Действие |
-|---|---|
-| `python build.py init` | Инициализация HDFS (только при первом запуске) |
-| `python build.py start` | Сборка и запуск всех стеков в фоновом режиме |
-| `python build.py stop` | Остановка контейнеров с сохранением данных в Docker volumes |
-| `python build.py clean` | **Полный сброс**. Останавливает кластер, удаляет контейнеры и **все** volumes проекта. Требует подтверждения `y` |
-
-Остановить отдельные стеки можно стандартными командами `docker compose` из соответствующих директорий (`hadoop/`, `airflow/`, `kafka/`, `ClickHouse/`, `postgres/`, `spark/`).
 
 ## Особенности реализации
 
 - **Модульная архитектура** — каждый компонент Big Data-стека развёрнут в собственном compose-файле с общей внешней сетью `cluster`.
 - **Партиционирование в HDFS** — хранение по `year/month/day` для удобства последующей фильтрации и инкрементальной обработки.
 - **Два независимых пайплайна** — FIRMS и Open-Meteo изолированы по DAG'ам, путям в HDFS и логике обработки.
-- **Валидация через Spark** — отдельный PySpark job проверяет целостность JSON-пейлоада перед публикацией в `raw/`.
 - **Интеграция с WebHDFS** — работа с HDFS из Airflow реализована через `WebHDFSHook`.
-- **Airflow 3 совместимость** — используются подходы из Airflow 3 (`airflow.sdk`, deadline/callback-механика).
-- **CDP-прокси** — нетривиальное решение для получения данных Open-Meteo без прямых HTTP-запросов из контейнерного окружения в текущей конфигурации.
+- **Airflow 3** — используются подходы из Airflow 3 (`airflow.sdk`, deadline/callback-механика).
+- **CDP-прокси** — решение для получения данных Open-Meteo без прямых HTTP-запросов из контейнерного окружения в текущей конфигурации.
 
 ## Известные ограничения
 
@@ -271,19 +285,14 @@ python edge_bridge.py
 - **Мёртвая инфраструктура** — стеки Kafka и ClickHouse развёрнуты, но в текущих DAG'ах не используются.
 - **Spark-стек** — отдельный `spark/` compose-стек в текущем виде нуждается в доработке путей конфигурации. Основной путь запуска Spark-задач — через `SparkSubmitOperator` из контейнера Airflow.
 - **Edge-bridge** — требует ручного запуска Microsoft Edge с включённым CDP на хост-машине. Не подходит для «бесшовного» запуска только через `docker compose`.
-- **Наблюдаемость** — remote-логирование в HDFS настроено частично, часть механик алертинга нуждается в доработке.
 - **Идемпотентность** — отдельные шаги пайплайна стоит доработать для безопасного повторного запуска (`backfill`) за прошлые даты.
 
-Более подробный разбор багов, антипаттернов и рекомендаций по правкам приведён в [`PIPELINE_AUDIT_REPORT.md`](./PIPELINE_AUDIT_REPORT.md).
 
 ## Планы по доработке
 
-- [ ] Добавить `README.md`-гайд по полному запуску с нуля и `airflow.env.example`
-- [ ] Исправить конфигурацию Spark-стека и унифицировать запуск Spark
-- [ ] Перевести Open-Meteo-запросы на прямой HTTP-вызов либо оформить `edge_bridge` как управляемый сервис
-- [ ] Интегрировать Kafka/ClickHouse в пайплайн либо удалить неиспользуемые стеки
+- [ ] оформить `edge_bridge` как управляемый сервис
+- [ ] Интегрировать ClickHouse в пайплайн 
 - [ ] Довести идемпотентность `publish`-шага и политику перезаписи до production-подобного вида
 - [ ] Добавить базовые unit-тесты для утилит и проверку импорта DAG'ов
-- [ ] Настроить централизованное логирование и работоспособные алерты
 
 **Статус проекта:** учебный демонстрационный стенд. Подходит для изучения принципов построения Hadoop-кластера, оркестрации в Airflow, работы с HDFS и интеграции PySpark в data-pipeline.
