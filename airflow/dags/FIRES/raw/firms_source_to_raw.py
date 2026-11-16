@@ -20,7 +20,9 @@ from airflow.sdk import (
     AsyncCallback,
     TriggerRule,
     Variable,
-    Param
+    Param,
+    Asset,
+    Metadata,
 )
 from airflow.sdk.exceptions import AirflowFailException
 from airflow.providers.standard.operators.python import PythonOperator
@@ -29,6 +31,8 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
 logger = logging.getLogger("airflow.task")
+
+nasa_firms_asset = Asset(uri="asset://nasa/firms_extract_v2")
 
 
 def extract_firms_data(**context):
@@ -99,10 +103,8 @@ def extract_firms_data(**context):
         staged_file = posixpath.join(staging_date_path, filename)
         raw_file = posixpath.join(raw_date_path, filename)
 
-        
-
         if not force_reload:
-        # Уже загружен в staging — повторный запрос не нужен.
+            # Уже загружен в staging — повторный запрос не нужен.
             if hdfs_client.status(staged_file, strict=False) is not None:
                 logger.info(f"Файл уже существует в staging: {staged_file}")
                 continue
@@ -156,9 +158,7 @@ def publish_firms_data(**context):
     force_reload = context["params"]["force_reload"]
 
     if not isinstance(satellites, (list, tuple)) or len(satellites) == 0:
-        raise AirflowFailException(
-            f"некорректный список спутников: {satellites}"
-        )
+        raise AirflowFailException(f"некорректный список спутников: {satellites}")
 
     logical_date = context["logical_date"]
     execution_date = logical_date.date()
@@ -186,9 +186,7 @@ def publish_firms_data(**context):
         f"day={day}",
     )
 
-    raw_exists = (
-        hdfs_client.status(raw_date_path, strict=False) is not None
-    )
+    raw_exists = hdfs_client.status(raw_date_path, strict=False) is not None
 
     # Обычный запуск: дата уже опубликована — повторно не публикуем.
     if raw_exists and not force_reload:
@@ -211,9 +209,7 @@ def publish_firms_data(**context):
         )
 
         if hdfs_client.status(staged_file, strict=False) is None:
-            raise AirflowFailException(
-                f"Не найден файл спутника {sat}: {staged_file}"
-            )
+            raise AirflowFailException(f"Не найден файл спутника {sat}: {staged_file}")
 
     raw_parent = posixpath.dirname(raw_date_path)
     hdfs_client.makedirs(raw_parent)
@@ -224,9 +220,7 @@ def publish_firms_data(**context):
         f"._backup_day={day}_{run_id}",
     )
 
-    backup_exists = (
-        hdfs_client.status(backup_path, strict=False) is not None
-    )
+    backup_exists = hdfs_client.status(backup_path, strict=False) is not None
 
     if backup_exists:
         raise AirflowFailException(
@@ -258,6 +252,12 @@ def publish_firms_data(**context):
             )
 
     logger.info(f"Опубликованы данные FIRMS: {raw_date_path}")
+
+
+def publish_firms_asset_event(**context):
+    context["outlet_events"][nasa_firms_asset].extra = {
+        "historical_date": context["logical_date"].isoformat()
+    }
 
 
 with DAG(
@@ -350,7 +350,17 @@ with DAG(
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
-    end = EmptyOperator(task_id="end_pipeline")
+    # end = EmptyOperator(
+    #     task_id="end_pipeline",
+    #     outlets=[
+    #         Metadata(nasa_firms_asset, {"historical_date": "{{ logical_date }}"})
+    #     ],
+    # )
+    end = PythonOperator(
+        task_id="end_pipeline",
+        python_callable=publish_firms_asset_event,
+        outlets=[nasa_firms_asset],
+    )
 
     start >> extract_task >> validation_task
 

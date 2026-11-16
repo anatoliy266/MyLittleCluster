@@ -15,19 +15,42 @@ from datetime import datetime
 
 from airflow import DAG
 from airflow.exceptions import AirflowFailException
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
+from airflow.sdk import Asset
 
-from utils.default_args import default_args
 from utils import utils
+from utils.default_args import default_args
 
 logger = logging.getLogger("airflow.task")
 
-def read_hdfs_json(client, path):
-    with client.read(path, encoding="utf-8") as reader:
-        return json.load(reader)
+# Подписываемся на ассет из первого DAG
+nasa_firms_asset = Asset(uri="asset://nasa/firms_extract_v2")
+
+
+def get_historical_date_from_context(context):
+    """Вспомогательная функция для извлечения правильной исторической даты в Airflow 3"""
+    asset_uri = "asset://nasa/firms_extract_v2"
+    try:
+        events = context["triggering_asset_events"].for_asset(
+            uri="asset://nasa/firms_extract_v2"
+        )
+
+        if not events:
+            raise AirflowFailException("Не найдено событие Asset nasa/firms_extract_v2")
+
+        historical_date = events[0].extra.get("historical_date")
+
+        if not historical_date:
+            raise AirflowFailException("В событии Asset отсутствует historical_date")
+
+        return historical_date[:10]
+    except (KeyError, IndexError, AttributeError) as exc:
+        raise AirflowFailException(
+            f"Failed to extract historical_date from Asset metadata. Details: {exc}"
+        )
+
 
 def verify_run_bundle(**context):
     """
@@ -36,7 +59,9 @@ def verify_run_bundle(**context):
     """
     ti = context["ti"]
     run_id = context["run_id"]
-    ds = context["ds"]
+
+    # НАВИТНОЕ ИЗВЛЕЧЕНИЕ ДЛЯ AIRFLOW 3 (Вместо Jinja строки)
+    ds = get_historical_date_from_context(context)
 
     stg_root = context["params"]["stg_path"]
     hdfs_run_id = run_id.replace(":", "-")
@@ -50,9 +75,14 @@ def verify_run_bundle(**context):
     stg_bundle_path = posixpath.join(run_path, "stg")
     quarantine_bundle_path = posixpath.join(run_path, "quarantine")
 
-    logger.info("Verifying published bundle at %s", run_path)
+    logger.info("Verifying published bundle at %s for date %s", run_path, ds)
 
-    for p in [manifest_path, metrics_path, stg_bundle_path, quarantine_bundle_path]:
+    for p in [
+        manifest_path,
+        metrics_path,
+        stg_bundle_path,
+        quarantine_bundle_path,
+    ]:
         try:
             status = client.status(p, strict=False)
         except Exception as exc:
@@ -60,15 +90,12 @@ def verify_run_bundle(**context):
                 f"Failed to check HDFS path: {p}. Details: {exc}"
             )
         if status is None:
-            raise AirflowFailException(
-                f"Missing required artifact: {p}"
-            )
+            raise AirflowFailException(f"Missing required artifact: {p}")
 
     # Читаем манифест
     try:
         with client.read(manifest_path, encoding="utf-8") as reader:
-                manifest = json.load(reader)
-        
+            manifest = json.load(reader)
     except Exception as exc:
         raise AirflowFailException(
             f"Failed to read/parse manifest.json: {manifest_path}. Details: {exc}"
@@ -99,7 +126,6 @@ def verify_run_bundle(**context):
     try:
         with client.read(metrics_path, encoding="utf-8") as reader:
             metrics = json.load(reader)
-        
     except Exception as exc:
         raise AirflowFailException(
             f"Failed to read/parse metrics.json: {metrics_path}. Details: {exc}"
@@ -133,12 +159,13 @@ def verify_run_bundle(**context):
 
 def finish_run(**context):
     """
-    Фиксация успешного завершения. Фактическая замена CURRENT происходит в Spark-приложении
-    (commit_current_run). Здесь только логируем финальный статус.
+    Фиксация успешного завершения.
     """
     ti = context["ti"]
     run_id = context["run_id"]
-    ds = context["ds"]
+
+    # И здесь тоже берем историческую дату из ассета вместо контекстного ds
+    ds = get_historical_date_from_context(context)
 
     stg_root = context["params"]["stg_path"]
     hdfs_run_id = run_id.replace(":", "-")
@@ -168,7 +195,7 @@ with DAG(
     dag_id="firms_raw_to_stg_v2",
     default_args=default_args,
     description="NASA FIRMS RAW -> STG + КАРАНТИН (оркестрация Spark)",
-    schedule="@daily",
+    schedule=nasa_firms_asset,  # Срабатывает автоматически по сигналу
     start_date=datetime(2026, 10, 1),
     catchup=True,
     max_active_runs=1,
@@ -182,17 +209,6 @@ with DAG(
 ) as dag:
 
     start = EmptyOperator(task_id="start_pipeline")
-    
-    wait_for_raw = ExternalTaskSensor(
-        task_id="wait_for_raw_load",
-        external_dag_id="nasa_firms_extract_v2",
-        allowed_states=["success"],
-        failed_states=["failed"],
-        check_existence=True,
-        timeout=6 * 60 * 60,
-        poke_interval=60,
-        mode="reschedule",
-    )
 
     submit_spark_job = SparkSubmitOperator(
         task_id="submit_spark_job",
@@ -205,8 +221,9 @@ with DAG(
             "{{ params.stg_path }}",
             "--run_id",
             "{{ run_id }}",
+            # Достаем историческую дату через Jinja для аргументов Spark
             "--execution_date",
-            "{{ ds }}",
+            "{{ (triggering_asset_events.values() | first | first).extra['historical_date'][:10] }}",
         ],
         conf={
             "spark.master": "yarn",
@@ -228,4 +245,4 @@ with DAG(
         python_callable=finish_run,
     )
 
-    start >> wait_for_raw >> submit_spark_job >> verify_run_bundle_task >> finish_run_task
+    start >> submit_spark_job >> verify_run_bundle_task >> finish_run_task

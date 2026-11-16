@@ -318,8 +318,25 @@ def calculate_metrics(session, source_path, dt, logger):
     if "hourly" not in raw_df.columns:
         raise ValueError("В исходных JSON отсутствует объект hourly")
 
-    hourly_df = raw_df.select("hourly.*")
-    df = hourly_df.withColumn("source_file", F.input_file_name())
+    zip_cols = [F.col("hourly.time").alias("time")] + [
+        F.col(f"hourly.{param}").alias(param) for param in REQUESTED_PARAMS
+    ]
+
+    df = (
+        raw_df.withColumn("source_file", F.input_file_name()) 
+        .withColumn("dt", "?") 
+        .withColumn("zipped", F.explode(F.arrays_zip(*zip_cols))) 
+        .select(
+            "latitude",
+            "longitude",
+            "elevation",
+            "timezone",
+            "source_file",
+            "zipped.*"
+        ) 
+        .withColumn("time", F.to_timestamp("time", "yyyy-MM-dd'T'HH:mm"))
+    )
+
 
     classified_df = classify_records(df, dt).cache()
     stg_df = None

@@ -34,15 +34,15 @@
 ```mermaid
 graph TD
   A[NASA FIRMS API] --> B[Airflow DAG: firms_source_to_raw]
-  B --> C[HDFS /raw/firms/...]
+  B --> C[HDFS /raw/_nasa_firms/...]
   C --> D[Airflow DAG: firms_raw_to_stg]
-  D --> E[HDFS /stg/firms/...]
+  D --> E[HDFS /stg/nasa_firms/...]
   
   F[Open-Meteo API] --> G[Edge Bridge :8765]
   G --> H[Airflow DAG: open_meteo_source_to_raw]
-  H --> I[HDFS /raw/open-meteo/...]
+  H --> I[HDFS /raw/open_meteo/...]
   I --> J[Airflow DAG: open_meteo_raw_to_stg]
-  J --> K[HDFS /stg/open-meteo/...]
+  J --> K[HDFS /stg/open_meteo/...]
   
   E --> L[Аналитика / DWH-слой]
   K --> L
@@ -163,7 +163,7 @@ cd MyLittleCluster
 ### 4. Запуск всего кластера
 
 ```bash
-python build.py start
+python build.py up
 ```
 
 После успешного старта будут доступны все веб-интерфейсы кластера. Первый запуск может занять 5–10 минут из-за сборки образов и инициализации сервисов.
